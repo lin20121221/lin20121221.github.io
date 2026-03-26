@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DRUM CTRL — MIDI Parameter Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=Noto+Sans+SC:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --panel: #111118;
+    --panel2: #16161f;
+    --border: #2a2a3a;
+    --accent: #e8ff47;
+    --accent2: #ff4757;
+    --accent3: #47c6ff;
+    --text: #e8e8f0;
+    --text-dim: #5a5a70;
+    --text-mid: #9090a8;
+    --connected: #47ff8a;
+    --disconnected: #ff4757;
+    --pad0: #e8ff47;
+    --pad1: #47c6ff;
+    --glow-accent: rgba(232,255,71,0.15);
+    --glow-blue: rgba(71,198,255,0.12);
+    --transition: cubic-bezier(0.4,0,0.2,1);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 20% 0%, rgba(232,255,71,0.04) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 100%, rgba(71,198,255,0.04) 0%, transparent 60%);
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* HEADER */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.4;
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2rem;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-shadow: 0 0 20px var(--accent), 0 0 40px rgba(232,255,71,0.3);
+    line-height: 1;
+  }
+  .logo span {
+    color: var(--text-dim);
+    font-size: 0.7em;
+    display: block;
+    letter-spacing: 0.3em;
+    text-shadow: none;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.55rem;
+    margin-top: 2px;
+    color: var(--text-mid);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  /* MIDI Status */
+  .midi-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 2px;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--disconnected);
+    box-shadow: 0 0 6px var(--disconnected);
+    flex-shrink: 0;
+    transition: all 0.4s var(--transition);
+  }
+  .status-dot.connected {
+    background: var(--connected);
+    box-shadow: 0 0 8px var(--connected), 0 0 16px rgba(71,255,138,0.3);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%,100% { box-shadow: 0 0 8px var(--connected), 0 0 16px rgba(71,255,138,0.3); }
+    50% { box-shadow: 0 0 12px var(--connected), 0 0 24px rgba(71,255,138,0.5); }
+  }
+  .status-text { color: var(--text-mid); }
+  .status-name { color: var(--text); font-weight: 700; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .btn-connect {
+    padding: 8px 20px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s var(--transition);
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-connect::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    transform: translateX(-100%);
+    transition: transform 0.2s var(--transition);
+    z-index: -1;
+  }
+  .btn-connect:hover::before { transform: translateX(0); }
+  .btn-connect:hover { color: var(--bg); }
+  .btn-connect:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-connect:disabled::before { display: none; }
+
+  /* MAIN LAYOUT */
+  main {
+    padding: 24px 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  /* PAD SELECTOR */
+  .pad-selector {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 28px;
+    border: 1px solid var(--border);
+    padding: 4px;
+    width: fit-content;
+    background: var(--panel);
+    border-radius: 2px;
+  }
+  .pad-btn {
+    padding: 8px 28px;
+    background: transparent;
+    border: none;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 1px;
+    color: var(--text-dim);
+    transition: all 0.2s var(--transition);
+    position: relative;
+  }
+  .pad-btn.active[data-pad="0"] {
+    background: rgba(232,255,71,0.1);
+    color: var(--pad0);
+    box-shadow: inset 0 0 20px rgba(232,255,71,0.05);
+  }
+  .pad-btn.active[data-pad="1"] {
+    background: rgba(71,198,255,0.1);
+    color: var(--pad1);
+    box-shadow: inset 0 0 20px rgba(71,198,255,0.05);
+  }
+  .pad-btn:not(.active):hover { color: var(--text-mid); }
+
+  /* SECTIONS */
+  .sections-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 768px) {
+    .sections-grid { grid-template-columns: 1fr; }
+    header { padding: 16px 20px; }
+    .logo { font-size: 1.5rem; }
+    main { padding: 16px 20px; }
+  }
+
+  .section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel2);
+    position: relative;
+    overflow: hidden;
+  }
+  .section-header::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+  }
+  .section[data-type="trig"] .section-header::before { background: var(--accent); box-shadow: 2px 0 8px var(--accent); }
+  .section[data-type="midi"] .section-header::before { background: var(--accent3); box-shadow: 2px 0 8px var(--accent3); }
+  .section[data-type="global"] .section-header::before { background: var(--accent2); box-shadow: 2px 0 8px var(--accent2); }
+
+  .section-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.1rem;
+    letter-spacing: 0.2em;
+    color: var(--text);
+  }
+  .section[data-type="trig"] .section-title { color: var(--accent); }
+  .section[data-type="midi"] .section-title { color: var(--accent3); }
+  .section[data-type="global"] .section-title { color: var(--accent2); }
+
+  .section-subtitle {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    margin-left: auto;
+  }
+
+  /* PARAMS */
+  .params-list {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .param-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 70px;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .param-label {
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    color: var(--text-mid);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  /* Slider */
+  .slider-wrap {
+    position: relative;
+    height: 20px;
+    display: flex;
+    align-items: center;
+  }
+  .param-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 3px;
+    background: var(--border);
+    border-radius: 0;
+    outline: none;
+    cursor: pointer;
+    position: relative;
+  }
+  .param-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 8px var(--accent);
+    transition: transform 0.15s var(--transition), box-shadow 0.15s;
+  }
+  .param-slider::-moz-range-thumb {
+    width: 14px; height: 14px;
+    background: var(--accent);
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 8px var(--accent);
+  }
+  .param-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.3);
+    box-shadow: 0 0 14px var(--accent), 0 0 28px rgba(232,255,71,0.3);
+  }
+  .param-slider.pad1::-webkit-slider-thumb { background: var(--accent3); box-shadow: 0 0 8px var(--accent3); }
+  .param-slider.pad1::-moz-range-thumb { background: var(--accent3); box-shadow: 0 0 8px var(--accent3); }
+  .param-slider.pad1:hover::-webkit-slider-thumb { box-shadow: 0 0 14px var(--accent3), 0 0 28px rgba(71,198,255,0.3); }
+  .param-slider.red::-webkit-slider-thumb { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+  .param-slider.red::-moz-range-thumb { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+
+  /* Value display */
+  .param-value {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-align: right;
+    color: var(--accent);
+    min-width: 50px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+    border-radius: 2px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  .param-value[data-pad="1"] { color: var(--accent3); }
+  .param-value.red { color: var(--accent2); }
+  .param-value:hover { border-color: var(--accent); }
+  .param-value[data-pad="1"]:hover { border-color: var(--accent3); }
+
+  /* Select for CURVE */
+  .param-select {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235a5a70'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+  }
+  .param-select:focus { border-color: var(--accent); }
+  .param-select option { background: var(--panel2); }
+
+  /* Number input override */
+  .param-number {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--accent2);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    outline: none;
+    text-align: right;
+  }
+  .param-number:focus { border-color: var(--accent2); }
+
+  /* SEND button */
+  .btn-send {
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s var(--transition);
+    white-space: nowrap;
+  }
+  .btn-send:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 8px rgba(232,255,71,0.15);
+  }
+  .btn-send:disabled { opacity: 0.25; cursor: not-allowed; }
+  .btn-send.sent {
+    border-color: var(--connected);
+    color: var(--connected);
+    animation: flash-sent 0.5s ease-out;
+  }
+  @keyframes flash-sent {
+    0% { box-shadow: 0 0 16px rgba(71,255,138,0.6); }
+    100% { box-shadow: none; }
+  }
+
+  /* Global section spans full width */
+  .section.full-width {
+    grid-column: 1 / -1;
+  }
+
+  /* Log panel */
+  .log-panel {
+    grid-column: 1 / -1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .log-header {
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel2);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .log-title {
+    font-family: 'Bebas Neue', sans-serif;
+    letter-spacing: 0.2em;
+    font-size: 1rem;
+    color: var(--text-mid);
+  }
+  .btn-clear-log {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+  }
+  .btn-clear-log:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  .log-body {
+    padding: 12px 20px;
+    height: 130px;
+    overflow-y: auto;
+    font-size: 0.65rem;
+    line-height: 1.8;
+    color: var(--text-dim);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .log-body::-webkit-scrollbar { width: 4px; }
+  .log-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-entry { display: flex; gap: 12px; }
+  .log-time { color: var(--text-dim); flex-shrink: 0; opacity: 0.6; }
+  .log-entry.tx .log-msg { color: var(--accent); }
+  .log-entry.rx .log-msg { color: var(--accent3); }
+  .log-entry.sys .log-msg { color: var(--text-mid); }
+  .log-entry.err .log-msg { color: var(--accent2); }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    padding: 10px 24px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    color: var(--text);
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s var(--transition);
+    z-index: 9999;
+  }
+  #toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* Loading overlay */
+  #loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10,10,15,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5000;
+    backdrop-filter: blur(4px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  #loading-overlay.show {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .loading-inner {
+    text-align: center;
+  }
+  .loading-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.8rem;
+    letter-spacing: 0.3em;
+    color: var(--accent);
+    text-shadow: 0 0 20px var(--accent);
+    margin-bottom: 16px;
+  }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-msg {
+    margin-top: 12px;
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    color: var(--text-mid);
+    text-transform: uppercase;
+  }
+
+  /* Responsive 3-col grid for global params */
+  .params-list.compact {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 14px 24px;
+  }
+  @media (max-width: 900px) {
+    .params-list.compact { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 600px) {
+    .params-list.compact { grid-template-columns: 1fr; }
+    .param-row { grid-template-columns: 90px 1fr 60px; gap: 8px; }
+    .sections-grid { gap: 12px; }
+  }
+
+  .param-row-compact {
+    display: grid;
+    grid-template-columns: 100px 1fr 60px;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* ── MIDI Device Picker Modal ── */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.72);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 6000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s var(--transition);
+  }
+  .modal-backdrop.show {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    width: 480px;
+    max-width: calc(100vw - 32px);
+    overflow: hidden;
+    transform: translateY(12px);
+    transition: transform 0.25s var(--transition);
+    position: relative;
+  }
+  .modal-backdrop.show .modal {
+    transform: translateY(0);
+  }
+  .modal::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent3));
+  }
+  .modal-header {
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.3rem;
+    letter-spacing: 0.25em;
+    color: var(--accent);
+    text-shadow: 0 0 12px rgba(232,255,71,0.4);
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+    transition: color 0.15s;
+  }
+  .modal-close:hover { color: var(--accent2); }
+
+  .modal-body {
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .device-group label {
+    display: block;
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-mid);
+    margin-bottom: 8px;
+  }
+  .device-group label span {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+    position: relative;
+    top: -1px;
+  }
+  .device-group.in-group label span  { background: var(--accent3); box-shadow: 0 0 6px var(--accent3); }
+  .device-group.out-group label span { background: var(--accent);  box-shadow: 0 0 6px var(--accent); }
+
+  .device-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 160px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .device-list::-webkit-scrollbar { width: 4px; }
+  .device-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .device-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.15s var(--transition);
+    user-select: none;
+    background: var(--panel2);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: var(--text-mid);
+  }
+  .device-item:hover {
+    border-color: var(--text-dim);
+    color: var(--text);
+  }
+  .device-item.selected.in-item {
+    border-color: var(--accent3);
+    color: var(--accent3);
+    background: rgba(71,198,255,0.07);
+    box-shadow: inset 0 0 16px rgba(71,198,255,0.05);
+  }
+  .device-item.selected.out-item {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(232,255,71,0.07);
+    box-shadow: inset 0 0 16px rgba(232,255,71,0.05);
+  }
+  .device-radio {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    border: 1px solid var(--text-dim);
+    flex-shrink: 0;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .device-item.selected .device-radio::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .device-item.selected.in-item  .device-radio { border-color: var(--accent3); }
+  .device-item.selected.out-item .device-radio { border-color: var(--accent); }
+
+  .device-name { flex: 1; }
+  .device-state {
+    font-size: 0.55rem;
+    letter-spacing: 0.1em;
+    padding: 2px 6px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    background: rgba(71,255,138,0.1);
+    color: var(--connected);
+    border: 1px solid rgba(71,255,138,0.2);
+  }
+
+  .device-empty {
+    padding: 16px 12px;
+    text-align: center;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    border: 1px dashed var(--border);
+    border-radius: 2px;
+  }
+
+  .modal-footer {
+    padding: 14px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .modal-hint {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    flex: 1;
+  }
+  .btn-modal-confirm {
+    padding: 9px 24px;
+    background: var(--accent);
+    border: none;
+    color: var(--bg);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s var(--transition);
+  }
+  .btn-modal-confirm:hover { background: #f5ff80; box-shadow: 0 0 16px rgba(232,255,71,0.4); }
+  .btn-modal-confirm:disabled {
+    background: var(--border);
+    color: var(--text-dim);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  /* No midi warning */
+  .no-midi-warning {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    display: none;
+  }
+  .no-midi-warning.show { display: block; }
+  .no-midi-warning strong { color: var(--accent2); display: block; margin-bottom: 8px; font-size: 0.9rem; }
+
+  /* Animated lines decoration */
+  .deco-line {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.15;
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="loading-inner">
+    <div class="loading-title">QUERYING</div>
+    <div class="spinner"></div>
+    <div class="loading-msg" id="loading-msg">连接中...</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<header>
+  <div class="logo">
+    DRUM CTRL
+    <span>MIDI PARAMETER EDITOR · v1.0</span>
+  </div>
+  <div class="header-right">
+    <div class="midi-status" id="midi-status">
+      <div class="status-dot" id="status-dot"></div>
+      <span class="status-text">MIDI</span>
+      <span class="status-name" id="status-name">未连接</span>
+    </div>
+    <button class="btn-connect" id="btn-connect" onclick="connectMIDI()">连接设备</button>
+  </div>
+</header>
+
+<main>
+  <!-- PAD selector -->
+  <div class="pad-selector">
+    <button class="pad-btn active" data-pad="0" onclick="selectPad(0)">PAD 0</button>
+    <button class="pad-btn" data-pad="1" onclick="selectPad(1)">PAD 1</button>
+  </div>
+
+  <div class="sections-grid" id="main-grid">
+
+    <!-- TRIG Section -->
+    <div class="section" data-type="trig">
+      <div class="section-header">
+        <div class="section-title">TRIG</div>
+        <div class="section-subtitle">触发参数</div>
+      </div>
+      <div class="params-list" id="trig-params">
+        <!-- THRE -->
+        <div class="param-row">
+          <div class="param-label">THRE</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_THRE" min="0" max="127" value="64"
+              oninput="updateSlider('THRE',this.value)" />
+          </div>
+          <div class="param-value" id="v_THRE" data-pad="0" title="点击输入" onclick="editValue('THRE',0,127)">64</div>
+        </div>
+        <!-- GAIN -->
+        <div class="param-row">
+          <div class="param-label">GAIN</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_GAIN" min="0" max="127" value="64"
+              oninput="updateSlider('GAIN',this.value)" />
+          </div>
+          <div class="param-value" id="v_GAIN" data-pad="0" onclick="editValue('GAIN',0,127)">64</div>
+        </div>
+        <!-- MASKTIME -->
+        <div class="param-row">
+          <div class="param-label">MASKTIME</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_MASKTIME" min="0" max="127" value="64"
+              oninput="updateSlider('MASKTIME',this.value)" />
+          </div>
+          <div class="param-value" id="v_MASKTIME" data-pad="0" onclick="editValue('MASKTIME',0,127)">64</div>
+        </div>
+        <!-- SENSE -->
+        <div class="param-row">
+          <div class="param-label">SENSE</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_SENSE" min="0" max="127" value="64"
+              oninput="updateSlider('SENSE',this.value)" />
+          </div>
+          <div class="param-value" id="v_SENSE" data-pad="0" onclick="editValue('SENSE',0,127)">64</div>
+        </div>
+        <!-- CURVE -->
+        <div class="param-row" style="grid-template-columns:110px 1fr;">
+          <div class="param-label">CURVE</div>
+          <select class="param-select" id="s_CURVE" onchange="updateCurve(this.value)">
+            <option value="0">EXP_2</option>
+            <option value="1">EXP_1</option>
+            <option value="2" selected>LINEAR</option>
+            <option value="3">LOG_1</option>
+            <option value="4">LOG_2</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- MIDI Section -->
+    <div class="section" data-type="midi">
+      <div class="section-header">
+        <div class="section-title">MIDI</div>
+        <div class="section-subtitle">MIDI参数</div>
+      </div>
+      <div class="params-list" id="midi-params">
+        <!-- MIDINOTE -->
+        <div class="param-row">
+          <div class="param-label">MIDINOTE</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_MIDINOTE" min="0" max="127" value="38"
+              oninput="updateSlider('MIDINOTE',this.value)" />
+          </div>
+          <div class="param-value" id="v_MIDINOTE" data-pad="0" onclick="editValue('MIDINOTE',0,127)">38</div>
+        </div>
+        <!-- GATETIME -->
+        <div class="param-row">
+          <div class="param-label">GATETIME</div>
+          <div class="slider-wrap">
+            <input type="range" class="param-slider" id="s_GATETIME" min="0" max="1000" value="10"
+              oninput="updateSlider('GATETIME',this.value)" />
+          </div>
+          <div class="param-value" id="v_GATETIME" data-pad="0" onclick="editValue('GATETIME',0,1000)">10</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Global Section (full width) -->
+    <div class="section full-width" data-type="global">
+      <div class="section-header">
+        <div class="section-title">GLOBAL</div>
+        <div class="section-subtitle">全局参数（与PAD无关）</div>
+      </div>
+      <div class="params-list compact">
+        <!-- RETRIGGER -->
+        <div class="param-row-compact">
+          <div class="param-label">RETRIGGER</div>
+          <input type="range" class="param-slider red" id="s_RETRIGGER" min="0" max="30" value="10"
+            oninput="updateGlobal('RETRIGGER',this.value)" />
+          <div class="param-value red" id="v_RETRIGGER" onclick="editGlobalValue('RETRIGGER',0,30)">10</div>
+        </div>
+        <!-- SCANTIME -->
+        <div class="param-row-compact">
+          <div class="param-label">SCANTIME</div>
+          <input type="range" class="param-slider red" id="s_SCANTIME" min="0" max="127" value="64"
+            oninput="updateGlobal('SCANTIME',this.value)" />
+          <div class="param-value red" id="v_SCANTIME" onclick="editGlobalValue('SCANTIME',0,127)">64</div>
+        </div>
+        <!-- HRADJUST -->
+        <div class="param-row-compact">
+          <div class="param-label">HRADJUST</div>
+          <input type="range" class="param-slider red" id="s_HRADJUST" min="0" max="127" value="64"
+            oninput="updateGlobal('HRADJUST',this.value)" />
+          <div class="param-value red" id="v_HRADJUST" onclick="editGlobalValue('HRADJUST',0,127)">64</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Send all -->
+    <div style="grid-column:1/-1; display:flex; gap:10px; align-items:center;">
+      <button class="btn-connect" style="flex:1;" id="btn-query-all" onclick="queryAll()" disabled>
+        🔄 查询全部参数
+      </button>
+      <button class="btn-connect" style="flex:1; border-color:var(--accent3); color:var(--accent3);" id="btn-send-all" onclick="sendAll()" disabled>
+        📤 发送全部参数
+      </button>
+    </div>
+
+    <!-- Log -->
+    <div class="log-panel">
+      <div class="log-header">
+        <div class="log-title">SYSEX LOG</div>
+        <button class="btn-clear-log" onclick="clearLog()">清除</button>
+      </div>
+      <div class="log-body" id="log-body">
+        <div class="log-entry sys"><span class="log-time">--:--:--</span><span class="log-msg">等待 MIDI 连接...</span></div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- MIDI Device Picker Modal -->
+<div class="modal-backdrop" id="midi-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">选择 MIDI 设备</div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="device-group out-group">
+        <label><span></span>MIDI OUT（发送到设备）</label>
+        <div class="device-list" id="out-list"></div>
+      </div>
+      <div class="device-group in-group">
+        <label><span></span>MIDI IN（接收来自设备）</label>
+        <div class="device-list" id="in-list"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div class="modal-hint" id="modal-hint">请至少选择一个 OUT 设备</div>
+      <button class="btn-modal-confirm" id="btn-confirm" onclick="confirmConnect()" disabled>
+        确认连接
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================== STATE =====================
+let midiAccess = null;
+let midiOutput = null;
+let midiInput = null;
+let currentPad = 0;
+
+// Param state: [pad0, pad1]
+const paramState = {
+  THRE:     [64, 64],
+  GAIN:     [64, 64],
+  MASKTIME: [64, 64],
+  SENSE:    [64, 64],
+  CURVE:    [2, 2],
+  MIDINOTE: [38, 39],
+  GATETIME: [10, 10],
+  RETRIGGER: 10,
+  SCANTIME:  64,
+  HRADJUST:  64,
+};
+
+// SysEx command IDs (example mapping — adjust to actual device protocol)
+const CMD = {
+  THRE:      0x01,
+  GAIN:      0x02,
+  MASKTIME:  0x03,
+  SENSE:     0x04,
+  CURVE:     0x05,
+  MIDINOTE:  0x06,
+  GATETIME:  0x07,
+  RETRIGGER: 0x08,
+  SCANTIME:  0x09,
+  HRADJUST:  0x0A,
+  QUERY_ALL: 0x7F,
+};
+
+const SYSEX_HEADER = [0xF0, 0x00, 0x21, 0x44, 0x52]; // F0 + mfr ID + device ID
+const SYSEX_EOX = 0xF7;
+
+// ===================== MIDI CONNECT =====================
+let selectedOutId = null;
+let selectedInId  = null;
+
+async function connectMIDI() {
+  if (!navigator.requestMIDIAccess) {
+    showToast('⚠ 此浏览器不支持 Web MIDI API');
+    addLog('err', '浏览器不支持 Web MIDI API（请使用 Chrome/Edge）');
+    return;
+  }
+  try {
+    if (!midiAccess) {
+      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      midiAccess.onstatechange = (e) => {
+        addLog('sys', `设备状态变更: ${e.port.name} → ${e.port.state}`);
+        // 如果当前已连接的端口断开，更新状态栏
+        if (e.port.state === 'disconnected') {
+          if (midiOutput && midiOutput.id === e.port.id) {
+            midiOutput = null;
+            updateStatusUI(false, '设备已断开');
+            document.getElementById('btn-query-all').disabled = true;
+            document.getElementById('btn-send-all').disabled = true;
+            addLog('err', `输出设备断开: ${e.port.name}`);
+          }
+          if (midiInput && midiInput.id === e.port.id) {
+            midiInput.onmidimessage = null;
+            midiInput = null;
+            addLog('err', `输入设备断开: ${e.port.name}`);
+          }
+        }
+      };
+    }
+    openDevicePicker();
+  } catch(e) {
+    addLog('err', '获取 MIDI 权限失败: ' + e.message);
+    showToast('MIDI 权限被拒绝');
+  }
+}
+
+function openDevicePicker() {
+  // 重置选择
+  selectedOutId = null;
+  selectedInId  = null;
+
+  const outputs = [...midiAccess.outputs.values()];
+  const inputs  = [...midiAccess.inputs.values()];
+
+  // 渲染 OUT 列表
+  const outList = document.getElementById('out-list');
+  outList.innerHTML = '';
+  if (outputs.length === 0) {
+    outList.innerHTML = '<div class="device-empty">未检测到 MIDI OUT 设备</div>';
+  } else {
+    outputs.forEach(port => {
+      const el = document.createElement('div');
+      el.className = 'device-item out-item';
+      el.dataset.id = port.id;
+      el.innerHTML = `
+        <div class="device-radio"></div>
+        <div class="device-name">${port.name}</div>
+        <div class="device-state">${port.state}</div>`;
+      el.onclick = () => selectDevice('out', port.id);
+      outList.appendChild(el);
+    });
+  }
+
+  // 渲染 IN 列表
+  const inList = document.getElementById('in-list');
+  inList.innerHTML = '';
+  if (inputs.length === 0) {
+    inList.innerHTML = '<div class="device-empty">未检测到 MIDI IN 设备</div>';
+  } else {
+    inputs.forEach(port => {
+      const el = document.createElement('div');
+      el.className = 'device-item in-item';
+      el.dataset.id = port.id;
+      el.innerHTML = `
+        <div class="device-radio"></div>
+        <div class="device-name">${port.name}</div>
+        <div class="device-state">${port.state}</div>`;
+      el.onclick = () => selectDevice('in', port.id);
+      inList.appendChild(el);
+    });
+  }
+
+  updateConfirmBtn();
+  document.getElementById('midi-modal').classList.add('show');
+}
+
+function selectDevice(dir, id) {
+  if (dir === 'out') {
+    selectedOutId = (selectedOutId === id) ? null : id;  // 再次点击取消选择
+    document.querySelectorAll('#out-list .device-item').forEach(el => {
+      el.classList.toggle('selected', el.dataset.id === selectedOutId);
+    });
+  } else {
+    selectedInId = (selectedInId === id) ? null : id;
+    document.querySelectorAll('#in-list .device-item').forEach(el => {
+      el.classList.toggle('selected', el.dataset.id === selectedInId);
+    });
+  }
+  updateConfirmBtn();
+}
+
+function updateConfirmBtn() {
+  const btn  = document.getElementById('btn-confirm');
+  const hint = document.getElementById('modal-hint');
+  if (selectedOutId) {
+    btn.disabled = false;
+    hint.textContent = selectedInId
+      ? 'IN + OUT 均已选择，可接收响应'
+      : '已选 OUT — 可选择 IN 以接收回包';
+  } else {
+    btn.disabled = true;
+    hint.textContent = '请至少选择一个 OUT 设备';
+  }
+}
+
+function confirmConnect() {
+  // 断开旧连接
+  if (midiInput) { midiInput.onmidimessage = null; midiInput = null; }
+  midiOutput = null;
+
+  // 绑定新选择的端口
+  midiOutput = selectedOutId ? midiAccess.outputs.get(selectedOutId) : null;
+  midiInput  = selectedInId  ? midiAccess.inputs.get(selectedInId)   : null;
+
+  if (midiInput) {
+    midiInput.onmidimessage = onMIDIMessage;
+    addLog('sys', `MIDI IN  → ${midiInput.name}`);
+  }
+
+  if (midiOutput) {
+    updateStatusUI(true, midiOutput.name + (midiInput ? ` / ${midiInput.name}` : ''));
+    document.getElementById('btn-query-all').disabled = false;
+    document.getElementById('btn-send-all').disabled = false;
+    addLog('sys', `MIDI OUT → ${midiOutput.name}`);
+    closeModal();
+    // 连接后自动查询
+    if (midiInput) {
+      setTimeout(() => queryAll(), 300);
+    }
+  }
+}
+
+function closeModal() {
+  document.getElementById('midi-modal').classList.remove('show');
+}
+
+// 点击背景关闭
+document.getElementById('midi-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+function updateStatusUI(connected, name) {
+  document.getElementById('status-dot').className = 'status-dot' + (connected ? ' connected' : '');
+  document.getElementById('status-name').textContent = name;
+}
+
+// ===================== SYSEX SEND =====================
+function buildSysEx(cmd, ...data) {
+  return new Uint8Array([...SYSEX_HEADER, cmd, ...data, SYSEX_EOX]);
+}
+
+function sendParam(name, pad, value) {
+  if (!midiOutput) { showToast('未连接 MIDI 设备'); return; }
+  const cmd = CMD[name];
+  if (cmd === undefined) return;
+  let msg;
+  if (pad !== undefined && pad !== null) {
+    msg = buildSysEx(cmd, pad & 0x7F, value & 0x7F);
+    addLog('tx', `SEND ${name} pad=${pad} val=${value} [${hexStr(msg)}]`);
+  } else {
+    msg = buildSysEx(cmd, value & 0x7F);
+    addLog('tx', `SEND ${name} val=${value} [${hexStr(msg)}]`);
+  }
+  midiOutput.send(msg);
+}
+
+function queryParam(name, pad) {
+  if (!midiOutput) return;
+  const QUERY_CMD = 0x40 | (CMD[name] & 0x3F);
+  let msg;
+  if (pad !== undefined) {
+    msg = buildSysEx(QUERY_CMD, pad & 0x7F);
+  } else {
+    msg = buildSysEx(QUERY_CMD);
+  }
+  addLog('tx', `QUERY ${name}${pad!==undefined?` pad=${pad}`:''} [${hexStr(msg)}]`);
+  midiOutput.send(msg);
+}
+
+function queryAll() {
+  if (!midiOutput) return;
+  showLoading('查询参数中...');
+  const msg = buildSysEx(CMD.QUERY_ALL);
+  addLog('tx', `QUERY ALL [${hexStr(msg)}]`);
+  midiOutput.send(msg);
+  setTimeout(hideLoading, 2000);
+}
+
+function sendAll() {
+  if (!midiOutput) return;
+  const pad = currentPad;
+  ['THRE','GAIN','MASKTIME','SENSE','CURVE','MIDINOTE','GATETIME'].forEach(n => {
+    sendParam(n, pad, paramState[n][pad]);
+  });
+  sendParam('RETRIGGER', null, paramState.RETRIGGER);
+  sendParam('SCANTIME',  null, paramState.SCANTIME);
+  sendParam('HRADJUST',  null, paramState.HRADJUST);
+  showToast('全部参数已发送');
+}
+
+// ===================== SYSEX RECEIVE =====================
+function onMIDIMessage(e) {
+  const data = e.data;
+  if (data[0] === 0xF0 && data[data.length-1] === 0xF7) {
+    parseSysEx(data);
+  } else if ((data[0] & 0xF0) === 0x90) {
+    addLog('rx', `NOTE ON ch=${(data[0]&0x0F)+1} note=${data[1]} vel=${data[2]}`);
+  }
+}
+
+function parseSysEx(data) {
+  // Check header
+  for (let i = 0; i < SYSEX_HEADER.length; i++) {
+    if (data[i] !== SYSEX_HEADER[i]) {
+      addLog('rx', `SysEx (unknown): ${hexStr(data)}`);
+      return;
+    }
+  }
+  const cmd  = data[5];
+  const pad  = data[6];
+  const val  = data[7];
+
+  // Map cmd back to name
+  const name = Object.keys(CMD).find(k => CMD[k] === (cmd & 0x3F));
+  if (!name) { addLog('rx', `SysEx unknown cmd=0x${cmd.toString(16)} [${hexStr(data)}]`); return; }
+
+  addLog('rx', `RECV ${name}${pad!==undefined?` pad=${pad}`:''} val=${val}`);
+  applyReceivedParam(name, pad, val);
+}
+
+function applyReceivedParam(name, pad, val) {
+  if (['THRE','GAIN','MASKTIME','SENSE','CURVE','MIDINOTE','GATETIME'].includes(name)) {
+    paramState[name][pad] = val;
+    if (pad === currentPad) {
+      if (name === 'CURVE') {
+        document.getElementById('s_CURVE').value = val;
+      } else {
+        document.getElementById('s_'+name).value = val;
+        document.getElementById('v_'+name).textContent = val;
+      }
+    }
+  } else {
+    paramState[name] = val;
+    document.getElementById('s_'+name).value = val;
+    document.getElementById('v_'+name).textContent = val;
+  }
+}
+
+// ===================== UI UPDATES =====================
+function selectPad(pad) {
+  currentPad = pad;
+  document.querySelectorAll('.pad-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.pad) === pad);
+  });
+
+  const isPad1 = pad === 1;
+  ['s_THRE','s_GAIN','s_MASKTIME','s_SENSE','s_MIDINOTE','s_GATETIME'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('pad1', isPad1);
+  });
+  ['v_THRE','v_GAIN','v_MASKTIME','v_SENSE','v_MIDINOTE','v_GATETIME'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.dataset.pad = pad;
+  });
+
+  // Refresh displayed values for this pad
+  ['THRE','GAIN','MASKTIME','SENSE','MIDINOTE','GATETIME'].forEach(n => {
+    document.getElementById('s_'+n).value = paramState[n][pad];
+    document.getElementById('v_'+n).textContent = paramState[n][pad];
+  });
+  document.getElementById('s_CURVE').value = paramState.CURVE[pad];
+}
+
+function updateSlider(name, val) {
+  val = parseInt(val);
+  paramState[name][currentPad] = val;
+  document.getElementById('v_'+name).textContent = val;
+  sendParam(name, currentPad, val);
+  flashSendBtn(name);
+}
+
+function updateCurve(val) {
+  val = parseInt(val);
+  paramState.CURVE[currentPad] = val;
+  sendParam('CURVE', currentPad, val);
+  addLog('tx', `SET CURVE pad=${currentPad} val=${val}`);
+}
+
+function updateGlobal(name, val) {
+  val = parseInt(val);
+  paramState[name] = val;
+  document.getElementById('v_'+name).textContent = val;
+  sendParam(name, null, val);
+}
+
+function flashSendBtn(name) {
+  // Visual feedback on value display
+  const el = document.getElementById('v_'+name);
+  if (!el) return;
+  el.classList.add('sent');
+  setTimeout(() => el.classList.remove('sent'), 600);
+}
+
+function editValue(name, min, max) {
+  const current = paramState[name][currentPad];
+  const input = prompt(`设置 ${name} (${min}~${max}):`, current);
+  if (input === null) return;
+  const val = Math.max(min, Math.min(max, parseInt(input)));
+  if (isNaN(val)) return;
+  paramState[name][currentPad] = val;
+  document.getElementById('s_'+name).value = val;
+  document.getElementById('v_'+name).textContent = val;
+  sendParam(name, currentPad, val);
+}
+
+function editGlobalValue(name, min, max) {
+  const current = paramState[name];
+  const input = prompt(`设置 ${name} (${min}~${max}):`, current);
+  if (input === null) return;
+  const val = Math.max(min, Math.min(max, parseInt(input)));
+  if (isNaN(val)) return;
+  paramState[name] = val;
+  document.getElementById('s_'+name).value = val;
+  document.getElementById('v_'+name).textContent = val;
+  sendParam(name, null, val);
+}
+
+// ===================== LOG =====================
+function addLog(type, msg) {
+  const body = document.getElementById('log-body');
+  const now = new Date();
+  const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+  const el = document.createElement('div');
+  el.className = `log-entry ${type}`;
+  el.innerHTML = `<span class="log-time">${time}</span><span class="log-msg">${msg}</span>`;
+  body.appendChild(el);
+  body.scrollTop = body.scrollHeight;
+  // Trim
+  while (body.children.length > 200) body.removeChild(body.firstChild);
+}
+
+function clearLog() {
+  document.getElementById('log-body').innerHTML = '';
+}
+
+// ===================== HELPERS =====================
+function hexStr(data) {
+  return Array.from(data).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+}
+function pad2(n) { return n.toString().padStart(2,'0'); }
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function showLoading(msg) {
+  document.getElementById('loading-msg').textContent = msg || '处理中...';
+  document.getElementById('loading-overlay').classList.add('show');
+}
+
+function hideLoading() {
+  document.getElementById('loading-overlay').classList.remove('show');
+}
+
+// ===================== INIT =====================
+window.addEventListener('DOMContentLoaded', () => {
+  if (!navigator.requestMIDIAccess) {
+    addLog('err', '⚠ 当前浏览器不支持 Web MIDI API');
+    addLog('sys', '请使用 Google Chrome 或 Microsoft Edge');
+  } else {
+    addLog('sys', '就绪 — 点击「连接设备」以开始');
+  }
+});
+</script>
+</body>
+</html>
