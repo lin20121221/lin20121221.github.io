@@ -1045,9 +1045,6 @@ const CMD = {
   QUERY_ALL: 0x7F,
 };
 
-const SYSEX_HEADER = [0xF0, 0x00, 0x21, 0x44, 0x52]; // F0 + mfr ID + device ID
-const SYSEX_EOX = 0xF7;
-
 // ===================== MIDI CONNECT =====================
 let selectedOutId = null;
 let selectedInId  = null;
@@ -1166,27 +1163,45 @@ function updateConfirmBtn() {
   }
 }
 
-function confirmConnect() {
+async function confirmConnect() {
   // 断开旧连接
-  if (midiInput) { midiInput.onmidimessage = null; midiInput = null; }
-  midiOutput = null;
+  if (midiInput) {
+    midiInput.onmidimessage = null;
+    try { await midiInput.close(); } catch(_) {}
+    midiInput = null;
+  }
+  if (midiOutput) {
+    try { await midiOutput.close(); } catch(_) {}
+    midiOutput = null;
+  }
 
-  // 绑定新选择的端口
-  midiOutput = selectedOutId ? midiAccess.outputs.get(selectedOutId) : null;
-  midiInput  = selectedInId  ? midiAccess.inputs.get(selectedInId)   : null;
+  const outPort = selectedOutId ? midiAccess.outputs.get(selectedOutId) : null;
+  const inPort  = selectedInId  ? midiAccess.inputs.get(selectedInId)   : null;
+
+  try {
+    // open() 让端口从 closed → open，才能收发数据
+    if (outPort) await outPort.open();
+    if (inPort)  await inPort.open();
+  } catch(e) {
+    addLog('err', '端口打开失败: ' + e.message);
+    showToast('端口打开失败');
+    return;
+  }
+
+  midiOutput = outPort;
+  midiInput  = inPort;
 
   if (midiInput) {
     midiInput.onmidimessage = onMIDIMessage;
-    addLog('sys', `MIDI IN  → ${midiInput.name}`);
+    addLog('sys', `MIDI IN  → ${midiInput.name} [${midiInput.state}]`);
   }
 
   if (midiOutput) {
     updateStatusUI(true, midiOutput.name + (midiInput ? ` / ${midiInput.name}` : ''));
     document.getElementById('btn-query-all').disabled = false;
     document.getElementById('btn-send-all').disabled = false;
-    addLog('sys', `MIDI OUT → ${midiOutput.name}`);
+    addLog('sys', `MIDI OUT → ${midiOutput.name} [${midiOutput.state}]`);
     closeModal();
-    // 连接后自动查询
     if (midiInput) {
       setTimeout(() => queryAll(), 300);
     }
@@ -1208,43 +1223,62 @@ function updateStatusUI(connected, name) {
 }
 
 // ===================== SYSEX SEND =====================
-function buildSysEx(cmd, ...data) {
-  return new Uint8Array([...SYSEX_HEADER, cmd, ...data, SYSEX_EOX]);
+//
+// 协议帧格式（与 C 端 sysex_parse 完全对齐）：
+//
+//   写入  F0 MFR(3) DEV  0x01  CMD  PAD  VAL_LO  VAL_HI  F7   — 11 字节
+//   读取  F0 MFR(3) DEV  0x00  CMD  PAD                   F7   —  8 字节
+//   全查  F0 MFR(3) DEV  0x00  0x7F 0x7F                  F7   —  8 字节
+//
+//   VAL_LO = val & 0x7F
+//   VAL_HI = (val >> 7) & 0x7F   (GATETIME 最大 1000，需要高位)
+//   全局参数（RETRIGGER/SCANTIME/HRADJUST）PAD 字段固定 0x7F
+
+const DIR_READ  = 0x00;
+const DIR_WRITE = 0x01;
+const PAD_GLOBAL = 0x7F;
+
+// 组装一条 SysEx — 唯一的帧构造函数
+// direction : DIR_READ | DIR_WRITE
+// cmd       : CMD.xxx
+// pad       : 0 | 1 | PAD_GLOBAL
+// value     : 写入时传入数值；读取时传 undefined
+function buildSysEx(direction, cmd, pad, value) {
+  const header = [0xF0, 0x00, 0x21, 0x44, 0x52];
+  if (direction === DIR_WRITE) {
+    const lo = (value      ) & 0x7F;
+    const hi = (value >> 7 ) & 0x7F;
+    return new Uint8Array([...header, DIR_WRITE, cmd, pad, lo, hi, 0xF7]);
+  } else {
+    return new Uint8Array([...header, DIR_READ, cmd, pad, 0xF7]);
+  }
 }
 
 function sendParam(name, pad, value) {
   if (!midiOutput) { showToast('未连接 MIDI 设备'); return; }
   const cmd = CMD[name];
   if (cmd === undefined) return;
-  let msg;
-  if (pad !== undefined && pad !== null) {
-    msg = buildSysEx(cmd, pad & 0x7F, value & 0x7F);
-    addLog('tx', `SEND ${name} pad=${pad} val=${value} [${hexStr(msg)}]`);
-  } else {
-    msg = buildSysEx(cmd, value & 0x7F);
-    addLog('tx', `SEND ${name} val=${value} [${hexStr(msg)}]`);
-  }
+  const p = (pad === null || pad === undefined) ? PAD_GLOBAL : pad;
+  const msg = buildSysEx(DIR_WRITE, cmd, p, value);
+  addLog('tx', `WRITE ${name} pad=${p===PAD_GLOBAL?'GLB':p} val=${value} [${hexStr(msg)}]`);
   midiOutput.send(msg);
 }
 
 function queryParam(name, pad) {
   if (!midiOutput) return;
-  const QUERY_CMD = 0x40 | (CMD[name] & 0x3F);
-  let msg;
-  if (pad !== undefined) {
-    msg = buildSysEx(QUERY_CMD, pad & 0x7F);
-  } else {
-    msg = buildSysEx(QUERY_CMD);
-  }
-  addLog('tx', `QUERY ${name}${pad!==undefined?` pad=${pad}`:''} [${hexStr(msg)}]`);
+  const cmd = CMD[name];
+  if (cmd === undefined) return;
+  const p = (pad === null || pad === undefined) ? PAD_GLOBAL : pad;
+  const msg = buildSysEx(DIR_READ, cmd, p);
+  addLog('tx', `READ  ${name} pad=${p===PAD_GLOBAL?'GLB':p} [${hexStr(msg)}]`);
   midiOutput.send(msg);
 }
 
 function queryAll() {
   if (!midiOutput) return;
   showLoading('查询参数中...');
-  const msg = buildSysEx(CMD.QUERY_ALL);
-  addLog('tx', `QUERY ALL [${hexStr(msg)}]`);
+  const msg = buildSysEx(DIR_READ, CMD.QUERY_ALL, PAD_GLOBAL);
+  addLog('tx', `READ  ALL [${hexStr(msg)}]`);
   midiOutput.send(msg);
   setTimeout(hideLoading, 2000);
 }
@@ -1264,31 +1298,48 @@ function sendAll() {
 // ===================== SYSEX RECEIVE =====================
 function onMIDIMessage(e) {
   const data = e.data;
-  if (data[0] === 0xF0 && data[data.length-1] === 0xF7) {
+  if (data[0] === 0xF0 && data[data.length - 1] === 0xF7) {
     parseSysEx(data);
   } else if ((data[0] & 0xF0) === 0x90) {
-    addLog('rx', `NOTE ON ch=${(data[0]&0x0F)+1} note=${data[1]} vel=${data[2]}`);
+    addLog('rx', `NOTE ON ch=${(data[0] & 0x0F) + 1} note=${data[1]} vel=${data[2]}`);
   }
 }
 
+// 解析设备回包（格式同写入帧，DIR 字段为 0x00）：
+//   F0 MFR(3) DEV  0x00  CMD  PAD  VAL_LO  VAL_HI  F7
 function parseSysEx(data) {
-  // Check header
-  for (let i = 0; i < SYSEX_HEADER.length; i++) {
-    if (data[i] !== SYSEX_HEADER[i]) {
-      addLog('rx', `SysEx (unknown): ${hexStr(data)}`);
-      return;
+  const HEADER = [0xF0, 0x00, 0x21, 0x44, 0x52];
+
+  // 1. 帧头校验
+  if (data.length < 8) {
+    addLog('rx', `SysEx 帧太短 (${data.length}B): ${hexStr(data)}`); return;
+  }
+  for (let i = 0; i < HEADER.length; i++) {
+    if (data[i] !== HEADER[i]) {
+      addLog('rx', `SysEx 非本设备: ${hexStr(data)}`); return;
     }
   }
-  const cmd  = data[5];
-  const pad  = data[6];
-  const val  = data[7];
 
-  // Map cmd back to name
-  const name = Object.keys(CMD).find(k => CMD[k] === (cmd & 0x3F));
-  if (!name) { addLog('rx', `SysEx unknown cmd=0x${cmd.toString(16)} [${hexStr(data)}]`); return; }
+  const dir    = data[5];  // 0x00=READ response, 0x01=WRITE ack（如设备有ack）
+  const cmd    = data[6];
+  const pad    = data[7];
 
-  addLog('rx', `RECV ${name}${pad!==undefined?` pad=${pad}`:''} val=${val}`);
-  applyReceivedParam(name, pad, val);
+  // 2. 读取响应（11字节）含值字段
+  if (dir === DIR_READ && data.length === 11) {
+    const val_lo = data[8];
+    const val_hi = data[9];
+    const val    = val_lo | (val_hi << 7);
+
+    const name = Object.keys(CMD).find(k => CMD[k] === cmd);
+    if (!name) {
+      addLog('rx', `SysEx 未知 CMD=0x${cmd.toString(16)}: ${hexStr(data)}`); return;
+    }
+    addLog('rx', `RESP  ${name} pad=${pad === PAD_GLOBAL ? 'GLB' : pad} val=${val} [${hexStr(data)}]`);
+    applyReceivedParam(name, pad, val);
+
+  } else {
+    addLog('rx', `SysEx: ${hexStr(data)}`);
+  }
 }
 
 function applyReceivedParam(name, pad, val) {
@@ -1298,14 +1349,15 @@ function applyReceivedParam(name, pad, val) {
       if (name === 'CURVE') {
         document.getElementById('s_CURVE').value = val;
       } else {
-        document.getElementById('s_'+name).value = val;
-        document.getElementById('v_'+name).textContent = val;
+        document.getElementById('s_' + name).value = val;
+        document.getElementById('v_' + name).textContent = val;
       }
     }
   } else {
+    // 全局参数
     paramState[name] = val;
-    document.getElementById('s_'+name).value = val;
-    document.getElementById('v_'+name).textContent = val;
+    document.getElementById('s_' + name).value = val;
+    document.getElementById('v_' + name).textContent = val;
   }
 }
 
