@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v1.5 - AI 发音练习</title>
+<title>复读机 v1.6 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.5</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.6</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -456,9 +456,9 @@
 
   // ---------- 共享 AudioContext ----------
   let audioCtx = null;
-  function ensureAudioContext() {
+  async function ensureAudioContext() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
     return audioCtx;
   }
 
@@ -634,7 +634,7 @@
       
       try {
         const arrayBuffer = await file.arrayBuffer();
-        const ctx = ensureAudioContext();
+        const ctx = await ensureAudioContext();
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
         
         // 转为单声道samples
@@ -699,7 +699,7 @@
     if (track.isRecording) return;
     stopSingle(track);
     if (syncState.isPlaying) stopSynced();
-    const ctx = ensureAudioContext();
+    const ctx = await ensureAudioContext();
     try {
       track.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
@@ -816,10 +816,10 @@
   }
 
   // ---------- 独立播放 ----------
-  function playSingle(track) {
+  async function playSingle(track) {
     if (track.isRecording || track.isPlaying || !track.buffer || track.buffer.length === 0) return;
     if (syncState.isPlaying) return;
-    const ctx = ensureAudioContext();
+    const ctx = await ensureAudioContext();
     const src = ctx.createBufferSource();
     src.buffer = track.buffer;
     src.playbackRate.value = track.playbackRate;
@@ -854,7 +854,7 @@
   }
   function pauseSingle(track) {
     if (!track.isPlaying) return;
-    const ctx = ensureAudioContext();
+    const ctx = audioCtx; // 直接使用已存在的 context
     const elapsed = ctx.currentTime - track.playStartContextTime;
     track.playheadSeconds = Math.min(track.playStartOffset + elapsed, track.buffer.duration);
     track.playSource.onended = null;
@@ -880,7 +880,7 @@
   }
   function trackProgressLoop(track) {
     if (!track.isPlaying) return;
-    const ctx = ensureAudioContext();
+    const ctx = audioCtx; // 直接使用已存在的 context
     const elapsed = ctx.currentTime - track.playStartContextTime;
     // 考虑播放速度：实际经过的音频时间 = 实际时间 × 播放速度
     track.playheadSeconds = Math.min(track.playStartOffset + elapsed * track.playbackRate, track.buffer.duration);
@@ -914,12 +914,12 @@
   }
 
   // ---------- 同步播放 ----------
-  function playSynced() {
+  async function playSynced() {
     if (syncState.isPlaying || trackA.isPlaying || trackB.isPlaying) return;
     const durA = trackA.buffer ? trackA.buffer.duration : 0;
     const durB = trackB.buffer ? trackB.buffer.duration : 0;
     if (durA === 0 && durB === 0) return;
-    const ctx = ensureAudioContext();
+    const ctx = await ensureAudioContext();
     const when = ctx.currentTime + 0.1;
     const offset = syncState.playheadSeconds;
     
@@ -979,7 +979,7 @@
   function handleSyncEnded() { stopSynced(); }
   function pauseSynced() {
     if (!syncState.isPlaying) return;
-    const ctx = ensureAudioContext();
+    const ctx = audioCtx; // 直接使用已存在的 context
     const elapsed = Math.max(0, ctx.currentTime - syncState.startContextTime);
     syncState.playheadSeconds = syncState.startOffset + elapsed;
     [syncState.sourceA, syncState.sourceB].forEach(s => { if (s) { s.onended = null; try { s.stop(); } catch (e) {} } });
@@ -1005,7 +1005,7 @@
   }
   function syncProgressLoop() {
     if (!syncState.isPlaying) return;
-    const ctx = ensureAudioContext();
+    const ctx = audioCtx; // 直接使用已存在的 context
     const elapsed = Math.max(0, ctx.currentTime - syncState.startContextTime);
     syncState.playheadSeconds = syncState.startOffset + elapsed;
     updateSyncUI();
