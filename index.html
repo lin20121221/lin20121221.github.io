@@ -1093,8 +1093,8 @@
         const loud = track.loudnessCurve.loudness[i];
         if (t >= startSec && t <= startSec + visible) {
           const x = (t - startSec) / visible * w;
-          // 响度映射到画布上半部分
-          const y = h * 0.2 + (1 - Math.min(loud * 10, 1)) * (h * 0.3);
+          // 响度映射到画布上半部分（调整敏感度）
+          const y = h * 0.2 + (1 - Math.min(loud * 3, 1)) * (h * 0.3);
           if (i === 0) ctx2d.moveTo(x, y);
           else ctx2d.lineTo(x, y);
         }
