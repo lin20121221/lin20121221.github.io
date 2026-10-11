@@ -823,10 +823,17 @@
     const src = ctx.createBufferSource();
     src.buffer = track.buffer;
     src.playbackRate.value = track.playbackRate;
-    src.connect(ctx.destination);
+    
+    // 添加增益节点提升音量（iOS 录音音量补偿）
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = 2.0; // 提升到 2 倍音量
+    src.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    
     const offset = Math.min(track.playheadSeconds, track.buffer.duration);
     src.start(0, offset);
     track.playSource = src;
+    track.playGainNode = gainNode;
     track.playStartContextTime = ctx.currentTime;
     track.playStartOffset = offset;
     track.isPlaying = true;
