@@ -124,6 +124,16 @@
     <button id="syncStopBtn" disabled>停止</button>
     <span class="hint" id="syncTime">0.0s / 0.0s</span>
   </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="analyzeSimilarityBtn" disabled style="font-size:12px;padding:6px 10px;">相似度分析</button>
+    <span class="hint" id="similarityScore"></span>
+  </div>
+  <div class="zoom-row">
+    <label style="display:inline-flex;align-items:center;margin:0;">
+      <input type="checkbox" id="showDifferenceHeatmap" style="width:auto;margin:0 6px 0 0;">
+      <span>显示差异热图</span>
+    </label>
+  </div>
 </div>
 
 <div class="card">
@@ -308,6 +318,96 @@
     }
     return { loudness, times };
   }
+  
+  // ---------- 工具：相似度分析 ----------
+  // DTW (Dynamic Time Warping) 距离计算
+  function computeDTW(seq1, seq2, windowSize = 50) {
+    const n = seq1.length, m = seq2.length;
+    const maxLen = Math.max(n, m);
+    const w = Math.max(windowSize, Math.abs(n - m)); // 窗口大小
+    
+    // 初始化DTW矩阵
+    const dtw = Array(n + 1).fill(null).map(() => Array(m + 1).fill(Infinity));
+    dtw[0][0] = 0;
+    
+    for (let i = 1; i <= n; i++) {
+      const start = Math.max(1, i - w);
+      const end = Math.min(m, i + w);
+      for (let j = start; j <= end; j++) {
+        const cost = Math.abs(seq1[i-1] - seq2[j-1]);
+        dtw[i][j] = cost + Math.min(dtw[i-1][j], dtw[i][j-1], dtw[i-1][j-1]);
+      }
+    }
+    
+    return dtw[n][m];
+  }
+  
+  // 计算两段音频的相似度评分
+  function computeSimilarity(samplesA, samplesB, sampleRateA, sampleRateB) {
+    // 重采样到相同采样率（简化版：下采样）
+    let sa = samplesA, sb = samplesB;
+    if (sampleRateA !== sampleRateB) {
+      const targetRate = Math.min(sampleRateA, sampleRateB);
+      if (sampleRateA > targetRate) sa = downsample(samplesA, sampleRateA, targetRate);
+      if (sampleRateB > targetRate) sb = downsample(samplesB, sampleRateB, targetRate);
+    }
+    
+    // 截取相同长度
+    const minLen = Math.min(sa.length, sb.length);
+    sa = sa.slice(0, minLen);
+    sb = sb.slice(0, minLen);
+    
+    // 降采样用于DTW计算（减少计算量）
+    const hopSize = 512;
+    const envA = [], envB = [];
+    for (let i = 0; i < minLen; i += hopSize) {
+      let sumA = 0, sumB = 0;
+      for (let j = 0; j < hopSize && i + j < minLen; j++) {
+        sumA += Math.abs(sa[i + j]);
+        sumB += Math.abs(sb[i + j]);
+      }
+      envA.push(sumA / hopSize);
+      envB.push(sumB / hopSize);
+    }
+    
+    // 计算DTW距离
+    const dtwDist = computeDTW(envA, envB);
+    
+    // 归一化为相似度分数 (0-100)
+    const maxDist = Math.sqrt(envA.length) * 0.5; // 经验值
+    const similarity = Math.max(0, Math.min(100, 100 * (1 - dtwDist / maxDist)));
+    
+    return { similarity, dtwDistance: dtwDist };
+  }
+  
+  function downsample(samples, fromRate, toRate) {
+    const ratio = fromRate / toRate;
+    const newLen = Math.floor(samples.length / ratio);
+    const result = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+      result[i] = samples[Math.floor(i * ratio)];
+    }
+    return result;
+  }
+  
+  // 计算差异热图（逐帧差异）
+  function computeDifferenceHeatmap(samplesA, samplesB, sampleRate, hopSize = 2048) {
+    const minLen = Math.min(samplesA.length, samplesB.length);
+    const diffs = [];
+    const times = [];
+    
+    for (let start = 0; start + hopSize <= minLen; start += hopSize) {
+      let sumDiff = 0;
+      for (let i = 0; i < hopSize; i++) {
+        sumDiff += Math.abs(samplesA[start + i] - samplesB[start + i]);
+      }
+      const avgDiff = sumDiff / hopSize;
+      diffs.push(avgDiff);
+      times.push(start / sampleRate);
+    }
+    
+    return { diffs, times };
+  }
 
   // ---------- 工具：WAV 编码 ----------
   function encodeWav(samples, sampleRate) {
@@ -368,6 +468,7 @@
   const trackA = createTrack('录音 A', 'panelA');
   const trackB = createTrack('录音 B', 'panelB');
   const syncState = { isPlaying: false, playheadSeconds: 0, rafId: null, sourceA: null, sourceB: null, startContextTime: 0, startOffset: 0 };
+  const analysisState = { similarity: null, differenceHeatmap: null, showDifferenceHeatmap: false };
 
   // ---------- 渲染面板 DOM ----------
   function renderPanel(track) {
@@ -1000,6 +1101,27 @@
         ctx2d.fillText(ann.text, x + 3, 24);
       }
     }
+    
+    // 绘制差异热图
+    if (analysisState.showDifferenceHeatmap && analysisState.differenceHeatmap) {
+      const heatmap = analysisState.differenceHeatmap;
+      ctx2d.globalAlpha = 0.3;
+      for (let i = 0; i < heatmap.times.length; i++) {
+        const t = heatmap.times[i];
+        if (t >= startSec && t <= startSec + visible) {
+          const x = (t - startSec) / visible * w;
+          const nextT = heatmap.times[i + 1] || t + 0.05;
+          const width = Math.max(1, (nextT - t) / visible * w);
+          
+          // 差异值映射到颜色（红色强度）
+          const diff = heatmap.diffs[i];
+          const intensity = Math.min(1, diff * 5); // 调节敏感度
+          ctx2d.fillStyle = `rgba(255, 0, 0, ${intensity})`;
+          ctx2d.fillRect(x, 0, width, h);
+        }
+      }
+      ctx2d.globalAlpha = 1.0;
+    }
   }
 
   function setupWaveformGestures(track) {
@@ -1142,6 +1264,8 @@
     // 同步Stop按钮：只要进度条不在起点就使能
     document.getElementById('syncStopBtn').disabled = syncState.playheadSeconds === 0;
     document.getElementById('syncTime').textContent = fmtTime(syncState.playheadSeconds) + ' / ' + fmtTime(maxDur);
+    // 相似度分析按钮：需要两段录音都有
+    document.getElementById('analyzeSimilarityBtn').disabled = durA === 0 || durB === 0;
   }
 
   document.getElementById('syncSlider').addEventListener('input', (e) => seekSynced(parseFloat(e.target.value)));
@@ -1158,6 +1282,41 @@
     const vol = parseFloat(e.target.value);
     document.getElementById('volumeBLabel').textContent = Math.round(vol * 100) + '%';
     if (syncState.gainB) syncState.gainB.gain.value = vol;
+  });
+  
+  // 相似度分析
+  document.getElementById('analyzeSimilarityBtn').addEventListener('click', () => {
+    if (!trackA.samples || !trackB.samples) return;
+    const btn = document.getElementById('analyzeSimilarityBtn');
+    btn.disabled = true;
+    btn.textContent = '分析中...';
+    
+    setTimeout(() => {
+      const result = computeSimilarity(trackA.samples, trackB.samples, trackA.sampleRate, trackB.sampleRate);
+      analysisState.similarity = result.similarity;
+      
+      // 计算差异热图
+      const minLen = Math.min(trackA.samples.length, trackB.samples.length);
+      const sa = trackA.samples.slice(0, minLen);
+      const sb = trackB.samples.slice(0, minLen);
+      analysisState.differenceHeatmap = computeDifferenceHeatmap(sa, sb, trackA.sampleRate);
+      
+      document.getElementById('similarityScore').textContent = `相似度: ${result.similarity.toFixed(1)}%`;
+      btn.disabled = false;
+      btn.textContent = '相似度分析';
+      
+      if (analysisState.showDifferenceHeatmap) {
+        drawWaveform(trackA);
+        drawWaveform(trackB);
+      }
+    }, 50);
+  });
+  
+  // 差异热图显示开关
+  document.getElementById('showDifferenceHeatmap').addEventListener('change', (e) => {
+    analysisState.showDifferenceHeatmap = e.target.checked;
+    drawWaveform(trackA);
+    drawWaveform(trackB);
   });
   
   // 主题切换
