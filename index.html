@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v1.8 - AI 发音练习</title>
+<title>复读机 v1.9 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.8</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.9</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -721,20 +721,40 @@
     
     track.mediaRecorder = new MediaRecorder(track.mediaStream, mimeType ? { mimeType } : {});
     
+    // 预缓冲区：保存检测到声音前的音频（环形缓冲区）
+    const preBufferSize = 5; // 保留最近 5 帧
+    const preBuffer = [];
+    
     // 同时用 ScriptProcessor 做声音检测（不影响录音质量）
     const soundThreshold = 0.01;
     track.sourceNode = ctx.createMediaStreamSource(track.mediaStream);
     track.processorNode = ctx.createScriptProcessor(4096, 1, 1);
     track.processorNode.onaudioprocess = (e) => {
-      if (track.recStarted) return;
       const input = e.inputBuffer.getChannelData(0);
-      let sum = 0;
-      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-      const rms = Math.sqrt(sum / input.length);
-      if (rms > soundThreshold) {
-        track.recStarted = true;
-        track.els.recBtn.textContent = '录音中...';
-        track.mediaRecorder.start();
+      
+      if (!track.recStarted) {
+        // 未开始录制：将音频保存到环形预缓冲区
+        preBuffer.push(new Float32Array(input));
+        if (preBuffer.length > preBufferSize) {
+          preBuffer.shift(); // 保持环形缓冲区大小
+        }
+        
+        // 检测是否有声音
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+        const rms = Math.sqrt(sum / input.length);
+        
+        if (rms > soundThreshold) {
+          track.recStarted = true;
+          track.els.recBtn.textContent = '录音中...';
+          
+          // 开始录制，并将预缓冲区的数据一起录入
+          track.mediaRecorder.start();
+          
+          // 注意：MediaRecorder 不支持直接注入历史数据
+          // 我们需要记录预缓冲，在停止时合并
+          track.preBufferData = preBuffer.slice(); // 保存副本
+        }
       }
     };
     
@@ -756,14 +776,43 @@
       try {
         const arrayBuffer = await blob.arrayBuffer();
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-        const samples = audioBuffer.getChannelData(0);
-        track.samples = new Float32Array(samples);
+        const recordedSamples = audioBuffer.getChannelData(0);
+        
+        // 如果有预缓冲数据，需要合并
+        let finalSamples;
+        if (track.preBufferData && track.preBufferData.length > 0) {
+          // 计算预缓冲区总长度
+          let preBufferLength = 0;
+          for (const chunk of track.preBufferData) {
+            preBufferLength += chunk.length;
+          }
+          
+          // 创建合并后的数组：预缓冲 + 录制数据
+          finalSamples = new Float32Array(preBufferLength + recordedSamples.length);
+          
+          // 复制预缓冲数据
+          let offset = 0;
+          for (const chunk of track.preBufferData) {
+            finalSamples.set(chunk, offset);
+            offset += chunk.length;
+          }
+          
+          // 复制录制数据
+          finalSamples.set(recordedSamples, offset);
+          
+          track.preBufferData = null; // 清理
+        } else {
+          // 没有预缓冲，直接使用录制数据
+          finalSamples = new Float32Array(recordedSamples);
+        }
+        
+        track.samples = finalSamples;
         track.sampleRate = audioBuffer.sampleRate;
         track.playheadSeconds = 0;
         track.panSeconds = 0;
-        track.zoomSeconds = Math.max(0.5, samples.length / track.sampleRate);
+        track.zoomSeconds = Math.max(0.5, finalSamples.length / track.sampleRate);
         
-        const buffer = ctx.createBuffer(1, Math.max(1, samples.length), track.sampleRate);
+        const buffer = ctx.createBuffer(1, Math.max(1, finalSamples.length), track.sampleRate);
         buffer.copyToChannel(track.samples, 0);
         track.buffer = buffer;
         
