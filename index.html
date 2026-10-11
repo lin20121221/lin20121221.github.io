@@ -1526,6 +1526,7 @@
       const utterance = new SpeechSynthesisUtterance(word);
       utterance.lang = 'en-US';
       utterance.rate = 0.8; // 慢速
+      utterance.volume = 1.0; // 最大音量
       speechSynthesis.cancel(); // 取消之前的
       speechSynthesis.speak(utterance);
     }
