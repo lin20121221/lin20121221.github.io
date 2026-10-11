@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v1.6 - AI 发音练习</title>
+<title>复读机 v1.7 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.6</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.7</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -819,6 +819,14 @@
   async function playSingle(track) {
     if (track.isRecording || track.isPlaying || !track.buffer || track.buffer.length === 0) return;
     if (syncState.isPlaying) return;
+    
+    // iOS: 强制停止 TTS 以释放音频设备
+    if ('speechSynthesis' in window && speechSynthesis.speaking) {
+      speechSynthesis.cancel();
+      // 等待 TTS 完全停止
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
     const ctx = await ensureAudioContext();
     const src = ctx.createBufferSource();
     src.buffer = track.buffer;
@@ -829,7 +837,7 @@
     // iOS Safari 需要更高的增益补偿
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    gainNode.gain.value = isIOS ? 12.0 : 1.0; // iOS 12倍，其他平台不补偿
+    gainNode.gain.value = isIOS ? 8.0 : 1.0; // iOS 8倍，其他平台不补偿
     src.connect(gainNode);
     gainNode.connect(ctx.destination);
     
@@ -919,6 +927,13 @@
     const durA = trackA.buffer ? trackA.buffer.duration : 0;
     const durB = trackB.buffer ? trackB.buffer.duration : 0;
     if (durA === 0 && durB === 0) return;
+    
+    // iOS: 强制停止 TTS 以释放音频设备
+    if ('speechSynthesis' in window && speechSynthesis.speaking) {
+      speechSynthesis.cancel();
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
     const ctx = await ensureAudioContext();
     const when = ctx.currentTime + 0.1;
     const offset = syncState.playheadSeconds;
