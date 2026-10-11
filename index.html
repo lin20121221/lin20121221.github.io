@@ -319,6 +319,15 @@
     track.els.playBtn.addEventListener('click', () => track.isPlaying ? pauseSingle(track) : playSingle(track));
     track.els.stopBtn.addEventListener('click', () => stopSingle(track));
     track.els.seek.addEventListener('input', (e) => seekSingle(track, parseFloat(e.target.value)));
+    // 双击变速滑条回到1.0
+    track.els.speedSlider.addEventListener('dblclick', () => {
+      track.playbackRate = 1.0;
+      track.els.speedSlider.value = 1.0;
+      track.els.speedLabel.textContent = '1.0x';
+      if (track.playSource) {
+        track.playSource.playbackRate.value = 1.0;
+      }
+    });
     track.els.specZoom.addEventListener('input', (e) => {
       track.spectrogramZoom = parseFloat(e.target.value);
       track.els.spectroInner.style.width = (track.spectrogramZoom * 100) + '%';
@@ -435,7 +444,8 @@
     track.samples = samples;
     track.playheadSeconds = 0;
     track.panSeconds = 0;
-    track.zoomSeconds = Math.min(5, Math.max(0.5, samples.length / track.sampleRate));
+    // 默认显示整条录音
+    track.zoomSeconds = Math.max(0.5, samples.length / track.sampleRate);
 
     const ctx = ensureAudioContext();
     const buffer = ctx.createBuffer(1, Math.max(1, samples.length), track.sampleRate);
@@ -795,7 +805,8 @@
     }
     track.els.playBtn.textContent = track.isPlaying ? '暂停' : '独立播放';
     track.els.playBtn.disabled = track.isRecording || !track.buffer || dur === 0 || syncState.isPlaying;
-    track.els.stopBtn.disabled = !track.isPlaying;
+    // Stop按钮：只要进度条不在起点就使能
+    track.els.stopBtn.disabled = track.playheadSeconds === 0;
     track.els.seek.max = Math.max(0.01, dur);
     track.els.seek.value = syncState.isPlaying ? Math.min(track.playheadSeconds, dur) : Math.min(track.playheadSeconds, dur);
     track.els.seek.disabled = syncState.isPlaying || !track.buffer || dur === 0;
@@ -814,7 +825,8 @@
     slider.disabled = trackA.isPlaying || trackB.isPlaying;
     document.getElementById('syncPlayBtn').textContent = syncState.isPlaying ? '暂停' : '同步播放';
     document.getElementById('syncPlayBtn').disabled = trackA.isPlaying || trackB.isPlaying || (durA===0 && durB===0);
-    document.getElementById('syncStopBtn').disabled = !syncState.isPlaying;
+    // 同步Stop按钮：只要进度条不在起点就使能
+    document.getElementById('syncStopBtn').disabled = syncState.playheadSeconds === 0;
     document.getElementById('syncTime').textContent = fmtTime(syncState.playheadSeconds) + ' / ' + fmtTime(maxDur);
   }
 
