@@ -27,6 +27,26 @@
       --border: #33353c;
     }
   }
+  [data-theme="light"] {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --accent: #4f8cff;
+    --accent-dark: #2f6fe0;
+    --danger: #e5484d;
+    --border: #e3e5e9;
+  }
+  [data-theme="dark"] {
+    --bg: #15161a;
+    --card: #202126;
+    --text: #f2f2f2;
+    --muted: #9aa0ab;
+    --accent: #5b9bff;
+    --accent-dark: #7bb0ff;
+    --danger: #ff6b6f;
+    --border: #33353c;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 16px; background: var(--bg); color: var(--text);
@@ -72,7 +92,9 @@
 </head>
 <body>
 
-<h1>复读机</h1>
+<h1>复读机
+  <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
+</h1>
 <p class="sub">两组录音 · 独立/同步播放 · 波形与频谱缩放 · AI 发音对比。全部音频数据只存在浏览器内存里，刷新或关闭页面即清空，不写磁盘、不进 localStorage。</p>
 
 <div class="card" id="panelA"></div>
@@ -81,6 +103,22 @@
 <div class="card">
   <h2>同步播放（A / B 位置联动）</h2>
   <input type="range" id="syncSlider" min="0" max="1" step="0.01" value="0">
+  <div class="zoom-row" style="margin-top:8px;">
+    <span>A音量</span>
+    <input type="range" id="volumeA" min="0" max="1" step="0.05" value="1">
+    <span id="volumeALabel" style="min-width:35px;text-align:right;">100%</span>
+  </div>
+  <div class="zoom-row">
+    <span>B音量</span>
+    <input type="range" id="volumeB" min="0" max="1" step="0.05" value="1">
+    <span id="volumeBLabel" style="min-width:35px;text-align:right;">100%</span>
+  </div>
+  <div class="zoom-row">
+    <label style="display:inline-flex;align-items:center;margin:0;">
+      <input type="checkbox" id="stereoSeparation" style="width:auto;margin:0 6px 0 0;">
+      <span>左右声道分离（A左B右）</span>
+    </label>
+  </div>
   <div class="row" style="margin-top:8px;">
     <button class="primary" id="syncPlayBtn">同步播放</button>
     <button id="syncStopBtn" disabled>停止</button>
@@ -304,6 +342,11 @@
         <button class="primary" data-el="playBtn" disabled>独立播放</button>
         <button data-el="stopBtn" disabled>停止</button>
       </div>
+      <div class="row" style="margin-top:8px;">
+        <button data-el="exportBtn" disabled style="font-size:12px;padding:6px 10px;">导出WAV</button>
+        <button data-el="importBtn" style="font-size:12px;padding:6px 10px;">导入音频</button>
+        <input type="file" data-el="fileInput" accept="audio/*" style="display:none;">
+      </div>
     `;
     const q = (sel) => panel.querySelector(`[data-el="${sel}"]`);
     track.els = {
@@ -312,7 +355,8 @@
       speedSlider: q('speedSlider'), speedLabel: q('speedLabel'),
       loopCheckbox: q('loopCheckbox'), setLoopA: q('setLoopA'), setLoopB: q('setLoopB'),
       clearLoop: q('clearLoop'), loopInfo: q('loopInfo'),
-      seek: q('seek'), recBtn: q('recBtn'), playBtn: q('playBtn'), stopBtn: q('stopBtn')
+      seek: q('seek'), recBtn: q('recBtn'), playBtn: q('playBtn'), stopBtn: q('stopBtn'),
+      exportBtn: q('exportBtn'), importBtn: q('importBtn'), fileInput: q('fileInput')
     };
 
     track.els.recBtn.addEventListener('click', () => track.isRecording ? stopRecording(track) : startRecording(track));
@@ -365,6 +409,60 @@
       track.loopB = null;
       updateLoopUI(track);
       drawWaveform(track);
+    });
+    
+    // 导出音频
+    track.els.exportBtn.addEventListener('click', () => {
+      if (!track.samples || track.samples.length === 0) return;
+      const wav = encodeWav(track.samples, track.sampleRate);
+      const blob = new Blob([wav], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${track.label}_${new Date().getTime()}.wav`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    
+    // 导入音频
+    track.els.importBtn.addEventListener('click', () => {
+      track.els.fileInput.click();
+    });
+    
+    track.els.fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      stopSingle(track);
+      if (syncState.isPlaying) stopSynced();
+      
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const ctx = ensureAudioContext();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        
+        // 转为单声道samples
+        const samples = audioBuffer.getChannelData(0);
+        track.samples = new Float32Array(samples);
+        track.sampleRate = audioBuffer.sampleRate;
+        track.playheadSeconds = 0;
+        track.panSeconds = 0;
+        track.zoomSeconds = Math.max(0.5, samples.length / track.sampleRate);
+        
+        const buffer = ctx.createBuffer(1, Math.max(1, samples.length), track.sampleRate);
+        buffer.copyToChannel(track.samples, 0);
+        track.buffer = buffer;
+        
+        updateTrackUI(track);
+        drawWaveform(track);
+        computeSpectrogramAsync(track);
+        updateCompareAvailability();
+        updateSyncUI();
+        
+        // 清空文件输入，允许再次导入同一文件
+        e.target.value = '';
+      } catch (err) {
+        alert('导入音频失败：' + err.message);
+      }
     });
 
     setupWaveformGestures(track);
@@ -566,17 +664,53 @@
     const ctx = ensureAudioContext();
     const when = ctx.currentTime + 0.1;
     const offset = syncState.playheadSeconds;
+    
+    // 获取音量和声道分离设置
+    const volumeA = parseFloat(document.getElementById('volumeA').value);
+    const volumeB = parseFloat(document.getElementById('volumeB').value);
+    const stereoSep = document.getElementById('stereoSeparation').checked;
+    
     if (durA > 0) {
       const srcA = ctx.createBufferSource();
-      srcA.buffer = trackA.buffer; srcA.connect(ctx.destination);
+      srcA.buffer = trackA.buffer;
+      
+      const gainA = ctx.createGain();
+      gainA.gain.value = volumeA;
+      
+      if (stereoSep) {
+        // 左声道分离
+        const pannerA = ctx.createStereoPanner();
+        pannerA.pan.value = -1; // 完全左声道
+        srcA.connect(gainA).connect(pannerA).connect(ctx.destination);
+      } else {
+        srcA.connect(gainA).connect(ctx.destination);
+      }
+      
       srcA.start(when, Math.min(offset, durA));
-      syncState.sourceA = srcA; srcA.onended = handleSyncEnded;
+      syncState.sourceA = srcA;
+      syncState.gainA = gainA;
+      srcA.onended = handleSyncEnded;
     }
     if (durB > 0) {
       const srcB = ctx.createBufferSource();
-      srcB.buffer = trackB.buffer; srcB.connect(ctx.destination);
+      srcB.buffer = trackB.buffer;
+      
+      const gainB = ctx.createGain();
+      gainB.gain.value = volumeB;
+      
+      if (stereoSep) {
+        // 右声道分离
+        const pannerB = ctx.createStereoPanner();
+        pannerB.pan.value = 1; // 完全右声道
+        srcB.connect(gainB).connect(pannerB).connect(ctx.destination);
+      } else {
+        srcB.connect(gainB).connect(ctx.destination);
+      }
+      
       srcB.start(when, Math.min(offset, durB));
-      syncState.sourceB = srcB; srcB.onended = handleSyncEnded;
+      syncState.sourceB = srcB;
+      syncState.gainB = gainB;
+      srcB.onended = handleSyncEnded;
     }
     syncState.startContextTime = when;
     syncState.startOffset = offset;
@@ -812,6 +946,7 @@
     track.els.seek.value = syncState.isPlaying ? Math.min(track.playheadSeconds, dur) : Math.min(track.playheadSeconds, dur);
     track.els.seek.disabled = syncState.isPlaying || !track.buffer || dur === 0;
     track.els.recBtn.disabled = syncState.isPlaying;
+    track.els.exportBtn.disabled = !track.buffer || dur === 0;
     updateLoopUI(track);
     updateCompareAvailability();
   }
@@ -834,6 +969,47 @@
   document.getElementById('syncSlider').addEventListener('input', (e) => seekSynced(parseFloat(e.target.value)));
   document.getElementById('syncPlayBtn').addEventListener('click', () => syncState.isPlaying ? pauseSynced() : playSynced());
   document.getElementById('syncStopBtn').addEventListener('click', () => stopSynced());
+  
+  // 音量控制
+  document.getElementById('volumeA').addEventListener('input', (e) => {
+    const vol = parseFloat(e.target.value);
+    document.getElementById('volumeALabel').textContent = Math.round(vol * 100) + '%';
+    if (syncState.gainA) syncState.gainA.gain.value = vol;
+  });
+  document.getElementById('volumeB').addEventListener('input', (e) => {
+    const vol = parseFloat(e.target.value);
+    document.getElementById('volumeBLabel').textContent = Math.round(vol * 100) + '%';
+    if (syncState.gainB) syncState.gainB.gain.value = vol;
+  });
+  
+  // 主题切换
+  function loadTheme() {
+    const saved = localStorage.getItem('repeater_theme');
+    if (saved) {
+      document.body.setAttribute('data-theme', saved);
+    }
+    return saved || 'auto';
+  }
+  
+  function saveTheme(theme) {
+    if (theme === 'auto') {
+      localStorage.removeItem('repeater_theme');
+      document.body.removeAttribute('data-theme');
+    } else {
+      localStorage.setItem('repeater_theme', theme);
+      document.body.setAttribute('data-theme', theme);
+    }
+  }
+  
+  let currentTheme = loadTheme();
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    if (currentTheme === 'auto' || currentTheme === 'light') {
+      currentTheme = 'dark';
+    } else if (currentTheme === 'dark') {
+      currentTheme = 'light';
+    }
+    saveTheme(currentTheme);
+  });
 
   window.addEventListener('resize', () => { drawWaveform(trackA); drawWaveform(trackB); drawSpectrogram(trackA); drawSpectrogram(trackB); });
 
