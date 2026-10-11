@@ -246,6 +246,69 @@
   }
   function heatColor(t) { return hsvToRgb(0.66*(1-t), 1, Math.min(1, 0.35+0.65*t)); }
 
+  // ---------- 工具：音频分析 ----------
+  // 自相关法检测基频
+  function detectPitch(samples, sampleRate, minFreq = 80, maxFreq = 500) {
+    const minPeriod = Math.floor(sampleRate / maxFreq);
+    const maxPeriod = Math.floor(sampleRate / minFreq);
+    let bestCorr = -1, bestLag = 0;
+    
+    // 归一化
+    let sum = 0, sumSq = 0;
+    for (let i = 0; i < samples.length; i++) {
+      sum += samples[i];
+      sumSq += samples[i] * samples[i];
+    }
+    const mean = sum / samples.length;
+    const std = Math.sqrt(sumSq / samples.length - mean * mean);
+    if (std < 1e-6) return 0; // 静音
+    
+    // 自相关
+    for (let lag = minPeriod; lag <= maxPeriod && lag < samples.length / 2; lag++) {
+      let corr = 0, count = 0;
+      for (let i = 0; i < samples.length - lag; i++) {
+        corr += ((samples[i] - mean) / std) * ((samples[i + lag] - mean) / std);
+        count++;
+      }
+      corr /= count;
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
+      }
+    }
+    
+    return bestCorr > 0.5 ? sampleRate / bestLag : 0; // 返回频率(Hz)，或0表示无音调
+  }
+  
+  // 计算基频曲线
+  function computePitchCurve(samples, sampleRate, hopSize = 2048) {
+    const pitches = [];
+    const times = [];
+    for (let start = 0; start + hopSize <= samples.length; start += hopSize) {
+      const chunk = samples.slice(start, start + hopSize);
+      const pitch = detectPitch(chunk, sampleRate);
+      pitches.push(pitch);
+      times.push(start / sampleRate);
+    }
+    return { pitches, times };
+  }
+  
+  // 计算响度曲线（RMS）
+  function computeLoudnessCurve(samples, sampleRate, hopSize = 2048) {
+    const loudness = [];
+    const times = [];
+    for (let start = 0; start + hopSize <= samples.length; start += hopSize) {
+      let sum = 0;
+      for (let i = start; i < start + hopSize && i < samples.length; i++) {
+        sum += samples[i] * samples[i];
+      }
+      const rms = Math.sqrt(sum / hopSize);
+      loudness.push(rms);
+      times.push(start / sampleRate);
+    }
+    return { loudness, times };
+  }
+
   // ---------- 工具：WAV 编码 ----------
   function encodeWav(samples, sampleRate) {
     const numChannels = 1, bitsPerSample = 16;
@@ -296,6 +359,9 @@
       loopEnabled: false, loopA: null, loopB: null,
       zoomSeconds: 5, panSeconds: 0,
       spectrogram: null, spectrogramLoading: false, spectrogramZoom: 1,
+      pitchCurve: null, loudnessCurve: null, // 音频分析数据
+      showPitch: false, showLoudness: false, // 显示开关
+      annotations: [], // 波形标注
       rafId: null, els: {}
     };
   }
@@ -347,6 +413,17 @@
         <button data-el="importBtn" style="font-size:12px;padding:6px 10px;">导入音频</button>
         <input type="file" data-el="fileInput" accept="audio/*" style="display:none;">
       </div>
+      <div class="zoom-row" style="margin-top:8px;">
+        <label style="display:inline-flex;align-items:center;margin:0;">
+          <input type="checkbox" data-el="showPitchCheckbox" style="width:auto;margin:0 6px 0 0;">
+          <span>显示音高</span>
+        </label>
+        <label style="display:inline-flex;align-items:center;margin:0;">
+          <input type="checkbox" data-el="showLoudnessCheckbox" style="width:auto;margin:0 6px 0 0;">
+          <span>显示响度</span>
+        </label>
+        <button data-el="addAnnotationBtn" disabled style="padding:4px 8px;font-size:12px;">添加标注</button>
+      </div>
     `;
     const q = (sel) => panel.querySelector(`[data-el="${sel}"]`);
     track.els = {
@@ -356,7 +433,9 @@
       loopCheckbox: q('loopCheckbox'), setLoopA: q('setLoopA'), setLoopB: q('setLoopB'),
       clearLoop: q('clearLoop'), loopInfo: q('loopInfo'),
       seek: q('seek'), recBtn: q('recBtn'), playBtn: q('playBtn'), stopBtn: q('stopBtn'),
-      exportBtn: q('exportBtn'), importBtn: q('importBtn'), fileInput: q('fileInput')
+      exportBtn: q('exportBtn'), importBtn: q('importBtn'), fileInput: q('fileInput'),
+      showPitchCheckbox: q('showPitchCheckbox'), showLoudnessCheckbox: q('showLoudnessCheckbox'),
+      addAnnotationBtn: q('addAnnotationBtn')
     };
 
     track.els.recBtn.addEventListener('click', () => track.isRecording ? stopRecording(track) : startRecording(track));
@@ -464,6 +543,35 @@
         alert('导入音频失败：' + err.message);
       }
     });
+    
+    // 音高/响度显示开关
+    track.els.showPitchCheckbox.addEventListener('change', (e) => {
+      track.showPitch = e.target.checked;
+      if (track.showPitch && !track.pitchCurve && track.samples) {
+        computeAudioAnalysis(track);
+      }
+      drawWaveform(track);
+    });
+    
+    track.els.showLoudnessCheckbox.addEventListener('change', (e) => {
+      track.showLoudness = e.target.checked;
+      if (track.showLoudness && !track.loudnessCurve && track.samples) {
+        computeAudioAnalysis(track);
+      }
+      drawWaveform(track);
+    });
+    
+    // 添加标注
+    track.els.addAnnotationBtn.addEventListener('click', () => {
+      const text = prompt('请输入标注内容：');
+      if (text) {
+        track.annotations.push({
+          time: track.playheadSeconds,
+          text: text
+        });
+        drawWaveform(track);
+      }
+    });
 
     setupWaveformGestures(track);
   }
@@ -564,6 +672,15 @@
       track.spectrogram = computeSpectrogram(track.samples, track.sampleRate);
       track.spectrogramLoading = false;
       drawSpectrogram(track);
+    }, 20);
+  }
+  
+  function computeAudioAnalysis(track) {
+    if (!track.samples || track.samples.length === 0) return;
+    setTimeout(() => {
+      track.pitchCurve = computePitchCurve(track.samples, track.sampleRate);
+      track.loudnessCurve = computeLoudnessCurve(track.samples, track.sampleRate);
+      drawWaveform(track);
     }, 20);
   }
 
@@ -823,6 +940,66 @@
       ctx2d.lineWidth = 1;
       ctx2d.beginPath(); ctx2d.moveTo(x,0); ctx2d.lineTo(x,h); ctx2d.stroke();
     }
+    
+    // 绘制音高曲线
+    if (track.showPitch && track.pitchCurve) {
+      ctx2d.strokeStyle = '#ffa500';
+      ctx2d.lineWidth = 2;
+      ctx2d.beginPath();
+      let first = true;
+      for (let i = 0; i < track.pitchCurve.times.length; i++) {
+        const t = track.pitchCurve.times[i];
+        const pitch = track.pitchCurve.pitches[i];
+        if (t >= startSec && t <= startSec + visible && pitch > 0) {
+          const x = (t - startSec) / visible * w;
+          // 映射频率到y坐标 (80-500Hz 映射到画布高度)
+          const y = h - (pitch - 80) / (500 - 80) * (h * 0.3);
+          if (first) {
+            ctx2d.moveTo(x, y);
+            first = false;
+          } else {
+            ctx2d.lineTo(x, y);
+          }
+        }
+      }
+      ctx2d.stroke();
+    }
+    
+    // 绘制响度曲线
+    if (track.showLoudness && track.loudnessCurve) {
+      ctx2d.strokeStyle = '#00ff00';
+      ctx2d.lineWidth = 1;
+      ctx2d.globalAlpha = 0.6;
+      ctx2d.beginPath();
+      for (let i = 0; i < track.loudnessCurve.times.length; i++) {
+        const t = track.loudnessCurve.times[i];
+        const loud = track.loudnessCurve.loudness[i];
+        if (t >= startSec && t <= startSec + visible) {
+          const x = (t - startSec) / visible * w;
+          // 响度映射到画布上半部分
+          const y = h * 0.2 + (1 - Math.min(loud * 10, 1)) * (h * 0.3);
+          if (i === 0) ctx2d.moveTo(x, y);
+          else ctx2d.lineTo(x, y);
+        }
+      }
+      ctx2d.stroke();
+      ctx2d.globalAlpha = 1.0;
+    }
+    
+    // 绘制标注
+    ctx2d.font = '11px sans-serif';
+    for (const ann of track.annotations) {
+      if (ann.time >= startSec && ann.time <= startSec + visible) {
+        const x = (ann.time - startSec) / visible * w;
+        ctx2d.strokeStyle = '#ff00ff';
+        ctx2d.lineWidth = 1;
+        ctx2d.setLineDash([3, 3]);
+        ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, h); ctx2d.stroke();
+        ctx2d.setLineDash([]);
+        ctx2d.fillStyle = '#ff00ff';
+        ctx2d.fillText(ann.text, x + 3, 24);
+      }
+    }
   }
 
   function setupWaveformGestures(track) {
@@ -947,6 +1124,7 @@
     track.els.seek.disabled = syncState.isPlaying || !track.buffer || dur === 0;
     track.els.recBtn.disabled = syncState.isPlaying;
     track.els.exportBtn.disabled = !track.buffer || dur === 0;
+    track.els.addAnnotationBtn.disabled = !track.buffer || dur === 0;
     updateLoopUI(track);
     updateCompareAvailability();
   }
