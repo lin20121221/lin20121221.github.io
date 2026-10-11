@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v1.3 - AI 发音练习</title>
+<title>复读机 v1.4 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.3</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.4</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -826,7 +826,7 @@
     
     // 添加增益节点提升音量（iOS 录音音量补偿）
     const gainNode = ctx.createGain();
-    gainNode.gain.value = 4.0; // 提升到 4 倍音量（iOS 录音补偿）
+    gainNode.gain.value = 8.0; // 提升到 8 倍音量（iOS 录音补偿）
     src.connect(gainNode);
     gainNode.connect(ctx.destination);
     
@@ -1527,6 +1527,14 @@
       utterance.lang = 'en-US';
       utterance.rate = 0.8; // 慢速
       utterance.volume = 1.0; // 最大音量
+      
+      // iOS: TTS 结束后恢复 AudioContext
+      utterance.onend = () => {
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+      };
+      
       speechSynthesis.cancel(); // 取消之前的
       speechSynthesis.speak(utterance);
     }
