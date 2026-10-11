@@ -133,6 +133,7 @@
       <input type="checkbox" id="showDifferenceHeatmap" style="width:auto;margin:0 6px 0 0;">
       <span>显示差异热图</span>
     </label>
+    <button id="exportReportBtn" disabled style="padding:4px 8px;font-size:12px;">导出对比报告</button>
   </div>
 </div>
 
@@ -183,7 +184,22 @@
   <button class="primary" id="compareBtn" disabled>比较 A / B 发音</button>
   <p class="hint" id="compareHint">需要先录制好 A、B 两段，并在设置里配置好接口。</p>
   <div id="compareResult" class="result-box hidden"></div>
-  <p class="hint">点击“比较”时，两段录音会被编码成音频数据发送给你上面配置的接口；录音本身始终只在内存里，这个动作不会把任何东西写进磁盘。</p>
+  <p class="hint">点击"比较"时，两段录音会被编码成音频数据发送给你上面配置的接口；录音本身始终只在内存里，这个动作不会把任何东西写进磁盘。</p>
+</div>
+
+<div class="card">
+  <h2>发音字典</h2>
+  <p class="hint">常用单词和音素的参考发音，点击播放示例音频（使用浏览器TTS）</p>
+  <div style="margin-top:10px;">
+    <label style="font-size:13px;margin-bottom:6px;">类别</label>
+    <select id="dictCategory" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;">
+      <option value="vowels">元音</option>
+      <option value="consonants">辅音</option>
+      <option value="common">常用单词</option>
+    </select>
+  </div>
+  <div id="dictList" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;"></div>
+  <p class="hint" style="margin-top:10px;">提示：这些是浏览器TTS生成的示例发音，可能不够准确。建议录制标准发音作为参考。</p>
 </div>
 
 <script>
@@ -1266,6 +1282,8 @@
     document.getElementById('syncTime').textContent = fmtTime(syncState.playheadSeconds) + ' / ' + fmtTime(maxDur);
     // 相似度分析按钮：需要两段录音都有
     document.getElementById('analyzeSimilarityBtn').disabled = durA === 0 || durB === 0;
+    // 导出报告按钮：需要两段录音都有
+    document.getElementById('exportReportBtn').disabled = durA === 0 || durB === 0;
   }
 
   document.getElementById('syncSlider').addEventListener('input', (e) => seekSynced(parseFloat(e.target.value)));
@@ -1319,6 +1337,106 @@
     drawWaveform(trackB);
   });
   
+  // 导出对比报告
+  document.getElementById('exportReportBtn').addEventListener('click', () => {
+    if (!trackA.buffer || !trackB.buffer) return;
+    
+    // 生成波形截图
+    const waveA = trackA.els.wave.toDataURL('image/png');
+    const waveB = trackB.els.wave.toDataURL('image/png');
+    const spectroA = trackA.els.spectro.toDataURL('image/png');
+    const spectroB = trackB.els.spectro.toDataURL('image/png');
+    
+    // 收集分析数据
+    const durA = trackA.buffer.duration;
+    const durB = trackB.buffer.duration;
+    const similarity = analysisState.similarity !== null ? analysisState.similarity.toFixed(1) + '%' : '未分析';
+    
+    const aiResult = document.getElementById('compareResult').textContent || '未进行AI对比';
+    
+    // 生成HTML报告
+    const reportHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>发音对比报告 - ${new Date().toLocaleString()}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f5f6f8; }
+  h1 { color: #1a1a1a; border-bottom: 2px solid #4f8cff; padding-bottom: 10px; }
+  h2 { color: #333; margin-top: 30px; }
+  .card { background: white; border-radius: 12px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 15px 0; }
+  .stat { padding: 15px; background: #f8f9fa; border-radius: 8px; }
+  .stat-label { font-size: 13px; color: #6b7280; margin-bottom: 5px; }
+  .stat-value { font-size: 24px; font-weight: 600; color: #1a1a1a; }
+  img { width: 100%; border-radius: 8px; margin: 10px 0; }
+  .ai-result { background: #f0f7ff; padding: 15px; border-radius: 8px; white-space: pre-wrap; font-size: 14px; line-height: 1.6; }
+  .timestamp { color: #6b7280; font-size: 13px; text-align: right; margin-top: 20px; }
+  @media print { body { background: white; } .card { box-shadow: none; border: 1px solid #ddd; } }
+</style>
+</head>
+<body>
+  <h1>🎤 发音对比报告</h1>
+  <div class="timestamp">生成时间：${new Date().toLocaleString()}</div>
+  
+  <div class="card">
+    <h2>📊 基本信息</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">录音A时长</div>
+        <div class="stat-value">${durA.toFixed(1)}s</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">录音B时长</div>
+        <div class="stat-value">${durB.toFixed(1)}s</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">相似度评分</div>
+        <div class="stat-value">${similarity}</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="card">
+    <h2>🎵 波形对比</h2>
+    <h3>录音 A</h3>
+    <img src="${waveA}" alt="波形A">
+    <h3>录音 B</h3>
+    <img src="${waveB}" alt="波形B">
+  </div>
+  
+  <div class="card">
+    <h2>🌈 频谱图</h2>
+    <h3>录音 A</h3>
+    <img src="${spectroA}" alt="频谱A">
+    <h3>录音 B</h3>
+    <img src="${spectroB}" alt="频谱B">
+  </div>
+  
+  <div class="card">
+    <h2>🤖 AI 分析结果</h2>
+    <div class="ai-result">${aiResult}</div>
+  </div>
+  
+  <div class="card">
+    <p style="color: #6b7280; font-size: 13px; margin: 0;">
+      本报告由复读机工具自动生成。报告包含波形、频谱和分析数据，供发音练习参考使用。
+    </p>
+  </div>
+</body>
+</html>`;
+    
+    // 下载报告
+    const blob = new Blob([reportHTML], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `发音对比报告_${new Date().getTime()}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+  
   // 主题切换
   function loadTheme() {
     const saved = localStorage.getItem('repeater_theme');
@@ -1347,6 +1465,72 @@
     }
     saveTheme(currentTheme);
   });
+  
+  // ---------- 发音字典 ----------
+  const pronunciationDict = {
+    vowels: [
+      { word: 'beat', ipa: '/i:/' }, { word: 'bit', ipa: '/ɪ/' },
+      { word: 'bait', ipa: '/eɪ/' }, { word: 'bet', ipa: '/e/' },
+      { word: 'bat', ipa: '/æ/' }, { word: 'father', ipa: '/ɑ:/' },
+      { word: 'bot', ipa: '/ɒ/' }, { word: 'boat', ipa: '/əʊ/' },
+      { word: 'book', ipa: '/ʊ/' }, { word: 'boot', ipa: '/u:/' },
+      { word: 'bird', ipa: '/ɜ:/' }, { word: 'about', ipa: '/ə/' }
+    ],
+    consonants: [
+      { word: 'pat', ipa: '/p/' }, { word: 'bat', ipa: '/b/' },
+      { word: 'tap', ipa: '/t/' }, { word: 'dad', ipa: '/d/' },
+      { word: 'cat', ipa: '/k/' }, { word: 'go', ipa: '/g/' },
+      { word: 'fat', ipa: '/f/' }, { word: 'vat', ipa: '/v/' },
+      { word: 'thing', ipa: '/θ/' }, { word: 'this', ipa: '/ð/' },
+      { word: 'see', ipa: '/s/' }, { word: 'zoo', ipa: '/z/' },
+      { word: 'she', ipa: '/ʃ/' }, { word: 'measure', ipa: '/ʒ/' },
+      { word: 'chip', ipa: '/tʃ/' }, { word: 'judge', ipa: '/dʒ/' },
+      { word: 'hat', ipa: '/h/' }, { word: 'man', ipa: '/m/' },
+      { word: 'no', ipa: '/n/' }, { word: 'sing', ipa: '/ŋ/' },
+      { word: 'let', ipa: '/l/' }, { word: 'red', ipa: '/r/' },
+      { word: 'wet', ipa: '/w/' }, { word: 'yes', ipa: '/j/' }
+    ],
+    common: [
+      { word: 'hello', ipa: '/həˈləʊ/' }, { word: 'world', ipa: '/wɜːld/' },
+      { word: 'thank you', ipa: '/θæŋk juː/' }, { word: 'please', ipa: '/pliːz/' },
+      { word: 'sorry', ipa: '/ˈsɒri/' }, { word: 'water', ipa: '/ˈwɔːtə/' },
+      { word: 'computer', ipa: '/kəmˈpjuːtə/' }, { word: 'english', ipa: '/ˈɪŋglɪʃ/' },
+      { word: 'morning', ipa: '/ˈmɔːnɪŋ/' }, { word: 'evening', ipa: '/ˈiːvnɪŋ/' },
+      { word: 'beautiful', ipa: '/ˈbjuːtɪfl/' }, { word: 'important', ipa: '/ɪmˈpɔːtnt/' }
+    ]
+  };
+  
+  function speakWord(word) {
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(word);
+      utterance.lang = 'en-US';
+      utterance.rate = 0.8; // 慢速
+      speechSynthesis.cancel(); // 取消之前的
+      speechSynthesis.speak(utterance);
+    }
+  }
+  
+  function renderPronunciationDict(category) {
+    const listEl = document.getElementById('dictList');
+    const items = pronunciationDict[category] || [];
+    listEl.innerHTML = items.map(item => `
+      <button onclick="speakWord('${item.word.replace(/'/g, "\\'")}')" 
+              style="padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:13px;text-align:center;">
+        <div style="font-weight:600;">${item.word}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;">${item.ipa}</div>
+      </button>
+    `).join('');
+  }
+  
+  // 暴露到全局供onclick使用
+  window.speakWord = speakWord;
+  
+  document.getElementById('dictCategory').addEventListener('change', (e) => {
+    renderPronunciationDict(e.target.value);
+  });
+  
+  // 初始化字典
+  renderPronunciationDict('vowels');
 
   window.addEventListener('resize', () => { drawWaveform(trackA); drawWaveform(trackB); drawSpectrogram(trackA); drawSpectrogram(trackB); });
 
