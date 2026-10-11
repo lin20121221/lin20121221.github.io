@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v1.9 - AI 发音练习</title>
+<title>复读机 v2.0 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v1.9</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v2.0</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -722,7 +722,7 @@
     track.mediaRecorder = new MediaRecorder(track.mediaStream, mimeType ? { mimeType } : {});
     
     // 预缓冲区：保存检测到声音前的音频（环形缓冲区）
-    const preBufferSize = 5; // 保留最近 5 帧
+    const preBufferSize = 1; // 保留最近 1 帧（约 0.1 秒）
     const preBuffer = [];
     
     // 同时用 ScriptProcessor 做声音检测（不影响录音质量）
