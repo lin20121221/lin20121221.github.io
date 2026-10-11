@@ -706,81 +706,94 @@
       alert('无法访问麦克风：' + e.message + '\n请确认通过 https:// 或 localhost 打开本页面，并已授权麦克风权限。');
       return;
     }
+    
     track.recChunks = [];
-    track.recStarted = false; // 标记是否检测到声音并开始录制
-    track.sourceNode = ctx.createMediaStreamSource(track.mediaStream);
-    track.processorNode = ctx.createScriptProcessor(4096, 1, 1);
-    
-    // 声音检测阈值（音量 RMS 超过此值视为有声音）
-    const soundThreshold = 0.01;
-    
-    track.processorNode.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      
-      // 如果还未开始录制，检测是否有声音
-      if (!track.recStarted) {
-        // 计算 RMS（均方根）音量
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) {
-          sum += input[i] * input[i];
-        }
-        const rms = Math.sqrt(sum / input.length);
-        
-        // 如果音量超过阈值，开始录制
-        if (rms > soundThreshold) {
-          track.recStarted = true;
-          track.els.recBtn.textContent = '录音中...';
-          track.recChunks.push(new Float32Array(input));
-        }
-      } else {
-        // 已开始录制，保存所有音频数据
-        track.recChunks.push(new Float32Array(input));
-      }
-    };
-    
-    track.gainNode = ctx.createGain();
-    track.gainNode.gain.value = 0; // 防止录音时监听回授，又能让 ScriptProcessor 持续工作
-    track.sourceNode.connect(track.processorNode);
-    track.processorNode.connect(track.gainNode);
-    track.gainNode.connect(ctx.destination);
+    track.recStarted = false;
     track.isRecording = true;
     track.sampleRate = ctx.sampleRate;
     track.samples = null; track.buffer = null; track.spectrogram = null;
     track.playheadSeconds = 0; track.panSeconds = 0;
+    
+    // 使用 MediaRecorder API（兼容 iOS，音质更好）
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 
+                     MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 
+                     MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+    
+    track.mediaRecorder = new MediaRecorder(track.mediaStream, mimeType ? { mimeType } : {});
+    
+    // 同时用 ScriptProcessor 做声音检测（不影响录音质量）
+    const soundThreshold = 0.01;
+    track.sourceNode = ctx.createMediaStreamSource(track.mediaStream);
+    track.processorNode = ctx.createScriptProcessor(4096, 1, 1);
+    track.processorNode.onaudioprocess = (e) => {
+      if (track.recStarted) return;
+      const input = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+      if (rms > soundThreshold) {
+        track.recStarted = true;
+        track.els.recBtn.textContent = '录音中...';
+        track.mediaRecorder.start();
+      }
+    };
+    
+    // 静音连接，只用于触发 onaudioprocess
+    track.gainNode = ctx.createGain();
+    track.gainNode.gain.value = 0;
+    track.sourceNode.connect(track.processorNode);
+    track.processorNode.connect(track.gainNode);
+    track.gainNode.connect(ctx.destination);
+    
+    track.mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) track.recChunks.push(e.data);
+    };
+    
+    track.mediaRecorder.onstop = async () => {
+      // 合并录音数据并解码
+      const blob = new Blob(track.recChunks, { type: track.mediaRecorder.mimeType });
+      track.recChunks = [];
+      try {
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        const samples = audioBuffer.getChannelData(0);
+        track.samples = new Float32Array(samples);
+        track.sampleRate = audioBuffer.sampleRate;
+        track.playheadSeconds = 0;
+        track.panSeconds = 0;
+        track.zoomSeconds = Math.max(0.5, samples.length / track.sampleRate);
+        
+        const buffer = ctx.createBuffer(1, Math.max(1, samples.length), track.sampleRate);
+        buffer.copyToChannel(track.samples, 0);
+        track.buffer = buffer;
+        
+        updateTrackUI(track);
+        drawWaveform(track);
+        computeSpectrogramAsync(track);
+        updateCompareAvailability();
+        updateSyncUI();
+      } catch (err) {
+        alert('录音解码失败：' + err.message);
+      }
+    };
+    
     updateTrackUI(track);
     drawWaveform(track);
   }
 
   function stopRecording(track) {
     if (!track.isRecording) return;
-    track.processorNode.disconnect();
-    track.sourceNode.disconnect();
-    track.gainNode.disconnect();
-    track.mediaStream.getTracks().forEach(t => t.stop());
     track.isRecording = false;
-
-    let total = 0;
-    for (const c of track.recChunks) total += c.length;
-    const samples = new Float32Array(total);
-    let off = 0;
-    for (const c of track.recChunks) { samples.set(c, off); off += c.length; }
-    track.recChunks = [];
-    track.samples = samples;
-    track.playheadSeconds = 0;
-    track.panSeconds = 0;
-    // 默认显示整条录音
-    track.zoomSeconds = Math.max(0.5, samples.length / track.sampleRate);
-
-    const ctx = ensureAudioContext();
-    const buffer = ctx.createBuffer(1, Math.max(1, samples.length), track.sampleRate);
-    if (samples.length > 0) buffer.copyToChannel(samples, 0);
-    track.buffer = buffer;
-
-    updateTrackUI(track);
-    drawWaveform(track);
-    computeSpectrogramAsync(track);
-    updateCompareAvailability();
-    updateSyncUI();
+    
+    if (track.processorNode) track.processorNode.disconnect();
+    if (track.sourceNode) track.sourceNode.disconnect();
+    if (track.gainNode) track.gainNode.disconnect();
+    if (track.mediaStream) track.mediaStream.getTracks().forEach(t => t.stop());
+    
+    // 停止 MediaRecorder（会触发 onstop 回调处理数据）
+    if (track.mediaRecorder && track.mediaRecorder.state !== 'inactive') {
+      track.mediaRecorder.stop();
+    }
   }
 
   function computeSpectrogramAsync(track) {
