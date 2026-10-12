@@ -456,7 +456,11 @@
 
   // ---------- 共享 AudioContext ----------
   let audioCtx = null;
+  function setAudioSession(type) {
+    try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) {}
+  }
   async function ensureAudioContext() {
+    setAudioSession('playback'); // iOS: 默认走媒体音量通路
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     return audioCtx;
@@ -701,7 +705,11 @@
     if (syncState.isPlaying) stopSynced();
     const ctx = await ensureAudioContext();
     try {
-      track.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setAudioSession('play-and-record');
+      // 关闭回声消除/降噪/自动增益：避免 iOS 把人声压得很小
+      track.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
     } catch (e) {
       alert('无法访问麦克风：' + e.message + '\n请确认通过 https:// 或 localhost 打开本页面，并已授权麦克风权限。');
       return;
@@ -721,49 +729,11 @@
     
     track.mediaRecorder = new MediaRecorder(track.mediaStream, mimeType ? { mimeType } : {});
     
-    // 预缓冲区：保存检测到声音前的音频（环形缓冲区）
-    const preBufferSize = 1; // 保留最近 1 帧（约 0.1 秒）
-    const preBuffer = [];
-    
-    // 同时用 ScriptProcessor 做声音检测（不影响录音质量）
-    const soundThreshold = 0.01;
-    track.sourceNode = ctx.createMediaStreamSource(track.mediaStream);
-    track.processorNode = ctx.createScriptProcessor(4096, 1, 1);
-    track.processorNode.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      
-      if (!track.recStarted) {
-        // 未开始录制：将音频保存到环形预缓冲区
-        preBuffer.push(new Float32Array(input));
-        if (preBuffer.length > preBufferSize) {
-          preBuffer.shift(); // 保持环形缓冲区大小
-        }
-        
-        // 检测是否有声音
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-        const rms = Math.sqrt(sum / input.length);
-        
-        if (rms > soundThreshold) {
-          track.recStarted = true;
-          track.els.recBtn.textContent = '录音中...';
-          
-          // 开始录制，并将预缓冲区的数据一起录入
-          track.mediaRecorder.start();
-          
-          // 注意：MediaRecorder 不支持直接注入历史数据
-          // 我们需要记录预缓冲，在停止时合并
-          track.preBufferData = preBuffer.slice(); // 保存副本
-        }
-      }
+    // 点击后立即录音；起声位置在录完后再裁剪，避免编码器启动延迟导致丢开头
+    track.mediaRecorder.onstart = () => {
+      track.recStarted = true;
+      updateTrackUI(track);
     };
-    
-    // 静音连接，只用于触发 onaudioprocess
-    track.gainNode = ctx.createGain();
-    track.gainNode.gain.value = 0;
-    track.sourceNode.connect(track.processorNode);
-    track.processorNode.connect(track.gainNode);
-    track.gainNode.connect(ctx.destination);
     
     track.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) track.recChunks.push(e.data);
@@ -776,34 +746,26 @@
       try {
         const arrayBuffer = await blob.arrayBuffer();
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-        const recordedSamples = audioBuffer.getChannelData(0);
+        const sr = audioBuffer.sampleRate;
+        const raw = audioBuffer.getChannelData(0);
         
-        // 如果有预缓冲数据，需要合并
-        let finalSamples;
-        if (track.preBufferData && track.preBufferData.length > 0) {
-          // 计算预缓冲区总长度
-          let preBufferLength = 0;
-          for (const chunk of track.preBufferData) {
-            preBufferLength += chunk.length;
-          }
-          
-          // 创建合并后的数组：预缓冲 + 录制数据
-          finalSamples = new Float32Array(preBufferLength + recordedSamples.length);
-          
-          // 复制预缓冲数据
-          let offset = 0;
-          for (const chunk of track.preBufferData) {
-            finalSamples.set(chunk, offset);
-            offset += chunk.length;
-          }
-          
-          // 复制录制数据
-          finalSamples.set(recordedSamples, offset);
-          
-          track.preBufferData = null; // 清理
-        } else {
-          // 没有预缓冲，直接使用录制数据
-          finalSamples = new Float32Array(recordedSamples);
+        // 裁剪：找到第一个超过阈值的采样点，往前保留 0.3 秒
+        const th = 0.004;
+        let first = 0;
+        while (first < raw.length && Math.abs(raw[first]) < th) first++;
+        if (first >= raw.length) first = 0; // 全是静音则不裁
+        const startIdx = Math.max(0, first - Math.floor(0.3 * sr));
+        const finalSamples = Float32Array.from(raw.subarray(startIdx));
+        
+        // 峰值归一化到 0.9（替代原先 iOS 固定 8 倍增益，避免爆音/仍然偏小）
+        let peak = 0;
+        for (let k = 0; k < finalSamples.length; k++) {
+          const v = Math.abs(finalSamples[k]);
+          if (v > peak) peak = v;
+        }
+        if (peak > 0.01) {
+          const g = Math.min(0.9 / peak, 20);
+          for (let k = 0; k < finalSamples.length; k++) finalSamples[k] *= g;
         }
         
         track.samples = finalSamples;
@@ -826,6 +788,7 @@
       }
     };
     
+    track.mediaRecorder.start();
     updateTrackUI(track);
     drawWaveform(track);
   }
@@ -834,15 +797,12 @@
     if (!track.isRecording) return;
     track.isRecording = false;
     
-    if (track.processorNode) track.processorNode.disconnect();
-    if (track.sourceNode) track.sourceNode.disconnect();
-    if (track.gainNode) track.gainNode.disconnect();
-    if (track.mediaStream) track.mediaStream.getTracks().forEach(t => t.stop());
-    
-    // 停止 MediaRecorder（会触发 onstop 回调处理数据）
+    // 先停 MediaRecorder（触发 onstop 处理数据），再释放麦克风
     if (track.mediaRecorder && track.mediaRecorder.state !== 'inactive') {
       track.mediaRecorder.stop();
     }
+    if (track.mediaStream) track.mediaStream.getTracks().forEach(t => t.stop());
+    setAudioSession('playback');
   }
 
   function computeSpectrogramAsync(track) {
@@ -891,12 +851,9 @@
     src.buffer = track.buffer;
     src.playbackRate.value = track.playbackRate;
     
-    // 添加增益节点提升音量（iOS 录音音量补偿）
+    // 录音已归一化，播放不再额外增益
     const gainNode = ctx.createGain();
-    // iOS Safari 需要更高的增益补偿
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    gainNode.gain.value = isIOS ? 8.0 : 1.0; // iOS 8倍，其他平台不补偿
+    gainNode.gain.value = 1.0;
     src.connect(gainNode);
     gainNode.connect(ctx.destination);
     
@@ -1353,7 +1310,7 @@
     track.els.dur.textContent = fmtTime(dur);
     // 根据录音状态显示不同文本
     if (track.isRecording) {
-      track.els.recBtn.textContent = track.recStarted ? '录音中...' : '等待声音...';
+      track.els.recBtn.textContent = track.recStarted ? '录音中...' : '准备中...';
     } else {
       track.els.recBtn.textContent = '录音';
     }
