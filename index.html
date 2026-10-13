@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v2.1 - AI 发音练习</title>
+<title>复读机 v2.2 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v2.1</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v2.2</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -757,14 +757,18 @@
         const startIdx = Math.max(0, first - Math.floor(0.1 * sr));
         const finalSamples = Float32Array.from(raw.subarray(startIdx));
         
-        // 峰值归一化到 0.9（替代原先 iOS 固定 8 倍增益，避免爆音/仍然偏小）
+        // 峰值归一化（iOS 需要更大的增益补偿）
+        const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
         let peak = 0;
         for (let k = 0; k < finalSamples.length; k++) {
           const v = Math.abs(finalSamples[k]);
           if (v > peak) peak = v;
         }
-        if (peak > 0.01) {
-          const g = Math.min(0.9 / peak, 20);
+        if (peak > 0.001) {
+          // iOS: 目标0.9，最大增益放宽到100；桌面：目标0.9，最大增益20
+          const targetPeak = 0.9;
+          const maxGain = isIOS ? 100 : 20;
+          const g = Math.min(targetPeak / peak, maxGain);
           for (let k = 0; k < finalSamples.length; k++) finalSamples[k] *= g;
         }
         
