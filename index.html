@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>复读机 v2.2 - AI 发音练习</title>
+<title>复读机 v2.3 - AI 发音练习</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -92,7 +92,7 @@
 </head>
 <body>
 
-<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v2.2</span>
+<h1>复读机 <span style="font-size: 13px; color: var(--muted); font-weight: normal;">v2.3</span>
   <button class="icon-btn" id="themeToggle" title="切换主题">🌓</button>
 </h1>
 
@@ -757,17 +757,20 @@
         const startIdx = Math.max(0, first - Math.floor(0.1 * sr));
         const finalSamples = Float32Array.from(raw.subarray(startIdx));
         
-        // 峰值归一化（iOS 需要更大的增益补偿）
-        const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+        // 峰值归一化（移动设备需要更大的增益补偿）
+        // 检测是否为移动设备（iOS、iPadOS、Android等）
+        const isMobile = /iPhone|iPod/.test(navigator.userAgent) || 
+                         (navigator.maxTouchPoints > 2 && /Macintosh/.test(navigator.userAgent)) || // iPadOS 伪装检测
+                         /Android/.test(navigator.userAgent);
         let peak = 0;
         for (let k = 0; k < finalSamples.length; k++) {
           const v = Math.abs(finalSamples[k]);
           if (v > peak) peak = v;
         }
         if (peak > 0.001) {
-          // iOS: 目标0.9，最大增益放宽到100；桌面：目标0.9，最大增益20
+          // 移动设备: 目标0.9，最大增益放宽到100；桌面：目标0.9，最大增益20
           const targetPeak = 0.9;
-          const maxGain = isIOS ? 100 : 20;
+          const maxGain = isMobile ? 100 : 20;
           const g = Math.min(targetPeak / peak, maxGain);
           for (let k = 0; k < finalSamples.length; k++) finalSamples[k] *= g;
         }
